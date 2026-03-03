@@ -239,6 +239,8 @@ def index():
     const applyBtn = document.getElementById('apply');
     const msg = document.getElementById('msg');
     let pendingTarget = null;
+    let currentDesired = null;
+    let currentRunning = null;
 
     slider.addEventListener('input', () => {
       replicaValue.textContent = slider.value;
@@ -252,6 +254,8 @@ def index():
 
         svc.textContent = `service: ${data.service}`;
         counts.textContent = `running: ${data.running_count} / desired: ${data.desired_replicas}`;
+        currentDesired = data.desired_replicas;
+        currentRunning = data.running_count;
 
         if (pendingTarget === null) {
           slider.value = data.desired_replicas;
@@ -274,6 +278,9 @@ def index():
         } else {
           applyBtn.disabled = false;
           slider.disabled = false;
+          msg.textContent = (data.running_count === data.desired_replicas)
+            ? `Stable: ${data.running_count} / ${data.desired_replicas}`
+            : `Reconciling: running ${data.running_count} / desired ${data.desired_replicas}`;
         }
 
         grid.innerHTML = '';
@@ -297,6 +304,17 @@ def index():
 
     applyBtn.addEventListener('click', async () => {
       const replicas = parseInt(slider.value, 10);
+
+      if (pendingTarget !== null) {
+        msg.textContent = `Please wait — scaling to ${pendingTarget} in progress`;
+        return;
+      }
+
+      if (currentDesired === replicas && currentRunning === replicas) {
+        msg.textContent = `Already at ${replicas} replicas`;
+        return;
+      }
+
       pendingTarget = replicas;
       applyBtn.disabled = true;
       slider.disabled = true;
