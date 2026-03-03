@@ -1,15 +1,16 @@
 # clawbucket
 
-Simple visual QA app for Docker Swarm.
+**Bob's World** — a tiny visual Docker Swarm dashboard.
 
-It serves a web page showing **which replica handled the request**:
-- container hostname
-- Swarm node hostname
-- task name / slot / id
-- stable color badge derived from hostname
-- container start time
+It shows live replica chicklets (cards) with generated names, state, slot, task id, and node id.
+It also includes a slider to scale replica count up/down.
 
-Refresh repeatedly and you should see these values rotate when traffic is balanced across replicas.
+## What makes it visual
+
+- Every replica gets a deterministic generated name (e.g., `Neon Falcon`)
+- Every replica has a stable color bar
+- Dashboard auto-refreshes every 3 seconds
+- You can watch chicklets appear/disappear as you scale
 
 ## Build and push image
 
@@ -25,12 +26,9 @@ docker swarm init   # once, if not already in swarm mode
 docker stack deploy -c docker-stack.yml clawbucket
 ```
 
-## Verify
+> Note: the stack mounts `/var/run/docker.sock` and constrains placement to a manager node so the app can query/scale the Swarm service.
 
-```bash
-docker service ls
-docker service ps clawbucket_clawbucket
-```
+## Use the dashboard
 
 Open:
 
@@ -38,7 +36,17 @@ Open:
 http://<manager-or-node-ip>:8080
 ```
 
-Then refresh the page many times for visual confirmation.
+You should see **Bob's World** with:
+- service status (`running / desired`)
+- replica slider + `Scale Swarm` button
+- replica chicklets for each running task
+
+## Verify from CLI (optional)
+
+```bash
+docker service ls
+docker service ps clawbucket_clawbucket
+```
 
 ## Cleanup
 
