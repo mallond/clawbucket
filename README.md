@@ -195,6 +195,23 @@ docker service ls
 
 This demo mounts Docker socket into the app container (`/var/run/docker.sock`), which gives powerful control over Docker on that host. Good for controlled experiments; not ideal for hardened public production.
 
+Recommended hardening for production:
+
+- Split services:
+  - **dashboard-ui** (public, read-only, no Docker socket)
+  - **swarm-controller** (private/internal, handles scale operations)
+- Protect scale actions with authentication + authorization (RBAC), rate limiting, and audit logs.
+- Isolate network paths:
+  - expose only UI through reverse proxy with TLS
+  - keep controller on private/internal overlay network
+  - optionally restrict admin routes by IP allowlist/VPN
+- Apply least privilege:
+  - use a Docker socket proxy with only required endpoints
+  - run containers non-root, read-only filesystem, dropped capabilities, `no-new-privileges`
+- Add server-side safety rails:
+  - enforce min/max replica bounds
+  - cooldown between scale operations
+
 For safer architecture, split control plane and app plane, add auth, and avoid exposing Docker socket to internet-facing services.
 
 ---
