@@ -1,9 +1,9 @@
 # clawbucket
 <img width="1025" height="381" alt="image" src="https://github.com/user-attachments/assets/9441334c-98f4-400f-9035-b183ca4ff0db" />
 
-**Bob's World** — a tiny visual Docker Swarm dashboard.
+**Bob's World** — a tiny visual Docker Swarm dashboard, built fast with OpenClaw + GPT-5.x using plain natural language prompts.
 
-It shows live replica chicklets (cards) with generated names, state, slot, task id, and node id. It also includes a slider to scale replica count up/down.
+It shows live replica chicklets (cards) with generated names, state, slot, task id, and node id, plus a slider to scale replicas up/down. This entire demo was ideated, coded, debugged, documented, and shipped in under 30 minutes — just by describing what we wanted in conversation. 🚀
 
 ---
 
