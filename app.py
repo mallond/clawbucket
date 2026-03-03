@@ -3,6 +3,7 @@ import hashlib
 import os
 import socket
 from datetime import datetime, timezone
+from threading import Thread
 
 import docker
 from docker.errors import DockerException, NotFound
@@ -122,15 +123,16 @@ def api_scale():
     if not isinstance(replicas, int) or replicas < 1 or replicas > 20:
         return jsonify({"error": "replicas must be an integer between 1 and 20"}), 400
 
-    try:
-        client = docker_client()
-        service = client.services.get(SERVICE_NAME)
-        service.scale(replicas)
-        return jsonify({"ok": True, "service": SERVICE_NAME, "desired_replicas": replicas})
-    except NotFound:
-        return jsonify({"error": f"Service '{SERVICE_NAME}' not found"}), 404
-    except DockerException as e:
-        return jsonify({"error": f"Failed to scale: {str(e)}"}), 503
+    def do_scale(target: int):
+        try:
+            client = docker_client()
+            service = client.services.get(SERVICE_NAME)
+            service.scale(target)
+        except Exception:
+            pass
+
+    Thread(target=do_scale, args=(replicas,), daemon=True).start()
+    return jsonify({"ok": True, "service": SERVICE_NAME, "desired_replicas": replicas, "status": "scaling"}), 202
 
 
 @app.get("/")
@@ -275,7 +277,8 @@ def index():
       const replicas = parseInt(slider.value, 10);
       applyBtn.disabled = true;
       msg.textContent = 'Scaling...';
-      try {
+
+      async function postScaleOnce() {
         const res = await fetch('/api/scale', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -283,10 +286,23 @@ def index():
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Scale failed');
+        return data;
+      }
+
+      try {
+        await postScaleOnce();
         msg.textContent = `Requested scale to ${replicas}`;
         setTimeout(loadState, 1000);
       } catch (e) {
-        msg.textContent = e.message;
+        // Routing mesh can briefly drop the first request while tasks are being replaced.
+        try {
+          await new Promise(r => setTimeout(r, 500));
+          await postScaleOnce();
+          msg.textContent = `Requested scale to ${replicas} (retry)`;
+          setTimeout(loadState, 1000);
+        } catch (e2) {
+          msg.textContent = e2.message || e.message;
+        }
       } finally {
         applyBtn.disabled = false;
       }
