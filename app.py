@@ -238,6 +238,7 @@ def index():
     const replicaValue = document.getElementById('replicaValue');
     const applyBtn = document.getElementById('apply');
     const msg = document.getElementById('msg');
+    let pendingTarget = null;
 
     slider.addEventListener('input', () => {
       replicaValue.textContent = slider.value;
@@ -251,8 +252,29 @@ def index():
 
         svc.textContent = `service: ${data.service}`;
         counts.textContent = `running: ${data.running_count} / desired: ${data.desired_replicas}`;
-        slider.value = data.desired_replicas;
-        replicaValue.textContent = data.desired_replicas;
+
+        if (pendingTarget === null) {
+          slider.value = data.desired_replicas;
+          replicaValue.textContent = data.desired_replicas;
+        }
+
+        if (pendingTarget !== null) {
+          applyBtn.disabled = true;
+          slider.disabled = true;
+          if (data.desired_replicas === pendingTarget && data.running_count === pendingTarget) {
+            pendingTarget = null;
+            applyBtn.disabled = false;
+            slider.disabled = false;
+            slider.value = data.desired_replicas;
+            replicaValue.textContent = data.desired_replicas;
+            msg.textContent = `Scale complete: ${data.running_count} / ${data.desired_replicas}`;
+          } else {
+            msg.textContent = `Scaling in progress... running ${data.running_count} / desired ${data.desired_replicas}`;
+          }
+        } else {
+          applyBtn.disabled = false;
+          slider.disabled = false;
+        }
 
         grid.innerHTML = '';
         for (const r of data.replicas) {
@@ -275,8 +297,10 @@ def index():
 
     applyBtn.addEventListener('click', async () => {
       const replicas = parseInt(slider.value, 10);
+      pendingTarget = replicas;
       applyBtn.disabled = true;
-      msg.textContent = 'Scaling...';
+      slider.disabled = true;
+      msg.textContent = `Scaling requested: target ${replicas}...`;
 
       async function postScaleOnce() {
         const res = await fetch('/api/scale', {
@@ -291,20 +315,19 @@ def index():
 
       try {
         await postScaleOnce();
-        msg.textContent = `Requested scale to ${replicas}`;
         setTimeout(loadState, 1000);
       } catch (e) {
         // Routing mesh can briefly drop the first request while tasks are being replaced.
         try {
           await new Promise(r => setTimeout(r, 500));
           await postScaleOnce();
-          msg.textContent = `Requested scale to ${replicas} (retry)`;
           setTimeout(loadState, 1000);
         } catch (e2) {
+          pendingTarget = null;
+          applyBtn.disabled = false;
+          slider.disabled = false;
           msg.textContent = e2.message || e.message;
         }
-      } finally {
-        applyBtn.disabled = false;
       }
     });
 
