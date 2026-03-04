@@ -212,7 +212,7 @@ def index():
 <body>
   <div class=\"wrap\">
     <h1>🌍 Bob's World</h1>
-    <div class=\"sub\">Swarm replicas as chicklets + one-slider scaling.</div>
+    <div class=\"sub\">Swarm replicas as chicklets + quick scaling control.</div>
 
     <div class=\"panel\">
       <div class=\"row\">
@@ -220,8 +220,8 @@ def index():
         <span class=\"meta\" id=\"counts\">running: - / desired: -</span>
       </div>
       <div class=\"row\" style=\"margin-top:12px\">
-        <label for=\"replicas\">Replicas: <strong id=\"replicaValue\">3</strong></label>
-        <input id=\"replicas\" type=\"range\" min=\"1\" max=\"12\" step=\"1\" value=\"3\" />
+        <label for=\"replicas\">Replicas:</label>
+        <input id=\"replicas\" type=\"number\" min=\"1\" max=\"25\" step=\"1\" value=\"3\" style=\"width:90px\" />
         <button id=\"apply\">Scale Swarm</button>
         <span class=\"meta\" id=\"msg\"></span>
       </div>
@@ -234,17 +234,13 @@ def index():
     const grid = document.getElementById('grid');
     const svc = document.getElementById('svc');
     const counts = document.getElementById('counts');
-    const slider = document.getElementById('replicas');
-    const replicaValue = document.getElementById('replicaValue');
+    const replicasInput = document.getElementById('replicas');
     const applyBtn = document.getElementById('apply');
     const msg = document.getElementById('msg');
     let pendingTarget = null;
     let currentDesired = null;
     let currentRunning = null;
 
-    slider.addEventListener('input', () => {
-      replicaValue.textContent = slider.value;
-    });
 
     async function loadState() {
       try {
@@ -258,26 +254,24 @@ def index():
         currentRunning = data.running_count;
 
         if (pendingTarget === null) {
-          slider.value = data.desired_replicas;
-          replicaValue.textContent = data.desired_replicas;
+          replicasInput.value = data.desired_replicas;
         }
 
         if (pendingTarget !== null) {
           applyBtn.disabled = true;
-          slider.disabled = true;
+          replicasInput.disabled = true;
           if (data.desired_replicas === pendingTarget && data.running_count === pendingTarget) {
             pendingTarget = null;
             applyBtn.disabled = false;
-            slider.disabled = false;
-            slider.value = data.desired_replicas;
-            replicaValue.textContent = data.desired_replicas;
+            replicasInput.disabled = false;
+            replicasInput.value = data.desired_replicas;
             msg.textContent = `Scale complete: ${data.running_count} / ${data.desired_replicas}`;
           } else {
             msg.textContent = `Scaling in progress... running ${data.running_count} / desired ${data.desired_replicas}`;
           }
         } else {
           applyBtn.disabled = false;
-          slider.disabled = false;
+          replicasInput.disabled = false;
           msg.textContent = (data.running_count === data.desired_replicas)
             ? `Stable: ${data.running_count} / ${data.desired_replicas}`
             : `Reconciling: running ${data.running_count} / desired ${data.desired_replicas}`;
@@ -303,7 +297,7 @@ def index():
     }
 
     applyBtn.addEventListener('click', async () => {
-      const replicas = parseInt(slider.value, 10);
+      const replicas = parseInt(replicasInput.value, 10);
 
       if (pendingTarget !== null) {
         msg.textContent = `Please wait — scaling to ${pendingTarget} in progress`;
@@ -317,7 +311,7 @@ def index():
 
       pendingTarget = replicas;
       applyBtn.disabled = true;
-      slider.disabled = true;
+      replicasInput.disabled = true;
       msg.textContent = `Scaling requested: target ${replicas}...`;
 
       async function postScaleOnce() {
@@ -343,7 +337,7 @@ def index():
         } catch (e2) {
           pendingTarget = null;
           applyBtn.disabled = false;
-          slider.disabled = false;
+          replicasInput.disabled = false;
           msg.textContent = e2.message || e.message;
         }
       }
