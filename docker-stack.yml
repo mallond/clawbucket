@@ -9,6 +9,19 @@ services:
       restart_policy:
         condition: any
 
+  clawbucket-aggregator:
+    image: mallond/clawbucket:latest
+    command: ["python", "aggregator.py"]
+    ports:
+      - "8090:8090"
+    environment:
+      - MEMCACHED_HOST=memcached
+      - MEMCACHED_PORT=11211
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+
   clawbucket:
     image: mallond/clawbucket:latest
     ports:

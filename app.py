@@ -19,6 +19,8 @@ MEMCACHED_HOST = os.environ.get("MEMCACHED_HOST", "memcached")
 MEMCACHED_PORT = int(os.environ.get("MEMCACHED_PORT", "11211"))
 CHAT_KEY = "clawbucket:chat:messages"
 CHAT_LIMIT = 40
+ARM_EVENTS_KEY = "clawbucket:arm:events"
+ARM_EVENTS_LIMIT = 500
 
 
 def color_from_text(text: str) -> str:
@@ -87,6 +89,51 @@ def append_chat_message(text: str):
         return None
 
     return message
+
+
+def load_arm_events():
+    try:
+        with memcache_client() as client:
+            raw = client.get(ARM_EVENTS_KEY)
+        if not raw:
+            return []
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        data = json.loads(raw)
+        if isinstance(data, list):
+            return data[-ARM_EVENTS_LIMIT:]
+    except Exception:
+        pass
+    return []
+
+
+def append_arm_event(task_id: str, bot_name: str, state: str):
+    task_id = (task_id or "").strip()
+    bot_name = (bot_name or "").strip()
+    state = (state or "").strip().lower()
+    if not task_id or state not in {"on", "off"}:
+        return None
+
+    event = {
+        "id": hashlib.md5(f"{datetime.now(timezone.utc).isoformat()}:{task_id}:{state}".encode("utf-8")).hexdigest()[:12],
+        "task_id": task_id,
+        "bot": bot_name or generated_name(task_id),
+        "state": state,
+        "at": datetime.now(timezone.utc).isoformat(),
+        "source": os.environ.get("TASK_NAME", HOSTNAME),
+    }
+
+    events = load_arm_events()
+    events.append(event)
+    events = events[-ARM_EVENTS_LIMIT:]
+
+    try:
+        with memcache_client() as client:
+            client.set(ARM_EVENTS_KEY, json.dumps(events), expire=86400)
+    except Exception:
+        return None
+
+    return event
 
 
 def generated_name(task_id: str) -> str:
@@ -203,6 +250,24 @@ def api_chat_post():
     if not msg:
         return jsonify({"error": "memcached unavailable"}), 503
     return jsonify({"ok": True, "message": msg}), 201
+
+
+@app.get("/api/arm/events")
+def api_arm_events_get():
+    return jsonify({"events": load_arm_events(), "source": "memcached"})
+
+
+@app.post("/api/arm")
+def api_arm_post():
+    data = request.get_json(silent=True) or {}
+    task_id = data.get("task_id")
+    bot_name = data.get("bot")
+    state = data.get("state")
+
+    event = append_arm_event(task_id, bot_name, state)
+    if not event:
+        return jsonify({"error": "invalid payload or memcached unavailable"}), 400
+    return jsonify({"ok": True, "event": event}), 201
 
 
 @app.get("/")
@@ -383,10 +448,21 @@ def index():
       const tile = armBtn.closest('.chip');
       if (!tile) return;
       const taskId = tile.dataset.taskId;
+      const botName = tile.dataset.botName;
       if (!taskId) return;
       const nowOn = !armBtn.classList.contains('on');
       applyTileVisualState(tile, nowOn);
       setTileToggle(taskId, nowOn);
+
+      fetch('/api/arm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          task_id: taskId,
+          bot: botName,
+          state: nowOn ? 'on' : 'off',
+        }),
+      }).catch(() => {});
     });
 
 
@@ -510,6 +586,7 @@ def index():
           const isOn = tileToggles[r.id] === true;
           el.className = 'chip';
           el.dataset.taskId = r.id;
+          el.dataset.botName = r.name;
           el.style.setProperty('--chip-color', r.color);
           el.innerHTML = `
             <span class="status">OFF</span>
