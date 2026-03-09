@@ -1,264 +1,272 @@
 # clawbucket
-<img width="1025" height="381" alt="image" src="https://github.com/user-attachments/assets/9441334c-98f4-400f-9035-b183ca4ff0db" />
 
-**Bob's World** — a tiny visual Docker Swarm dashboard, built fast with OpenClaw + GPT-5.x using plain natural language prompts.
+**Bob's World** is now a Docker Swarm simulation game platform:
 
-It shows live replica chicklets (cards) with generated names, state, slot, task id, and node id, plus a slider to scale replicas up/down. This entire demo was ideated, coded, debugged, documented, and shipped in under 30 minutes — just by describing what we wanted in conversation. 🚀
+- Swarm replica tiles with per-tile ARM state
+- Manager/leader visualization
+- Memcached-backed inter-container signaling
+- Leader-published Rock/Paper/Scissors (RPS) rounds
+- Non-leader player scoring with live tile display
+- Aggregator API for scoreboard + current ON/OFF state
 
----
-
-## What this is
-
-- A single web app on port **8080**
-- Runs as a Docker Swarm service
-- Uses Docker API (via mounted socket) to:
-  - read Swarm task state
-  - scale service replicas from the UI
-
-Dashboard title: **🌍 Bob's World**
+This README captures the current behavior in detail so we can evolve it safely and eventually extract a formal `SKILL.md`.
 
 ---
 
-## Prerequisites (on the target machine)
+## 1) What this system does
 
-- Docker Engine installed
-- User can run Docker commands (`docker ps` works)
-- Port **8080** open in firewall/router/security group
+### Core concept
+A Swarm service (`clawbucket`) runs multiple replicas. The UI shows one tile per running task. Containers coordinate through Memcached to simulate lightweight distributed game behavior.
 
-Optional but recommended:
-- A DNS name pointing to the host IP
-- TLS termination via reverse proxy (Nginx/Traefik/Caddy)
+### Current features
+
+1. **Swarm dashboard (port 8080)**
+   - Shows running replicas (`slot`, short `task id`, short `node id`, generated name)
+   - Scale control (`/api/scale`) with desired/running status
+
+2. **ARM toggles per tile**
+   - Each tile has an `Arm` button
+   - OFF = default style
+   - ON = green button + green ON status pill
+   - Every arm toggle emits an event to Memcached (`on` / `off`)
+
+3. **Single manager tile highlight**
+   - Exactly one tile is marked `MANAGER`
+   - Selection follows Swarm leader-aware rule with deterministic fallback
+
+4. **Container conversation (simulation)**
+   - UI panel posts/reads chat messages from Memcached
+
+5. **Task heartbeats**
+   - Each task writes periodic liveness text to Memcached:
+     - `Ping from <task name> at <timestamp>`
+   - Interval: every 10s
+   - TTL: 20s
+
+6. **RPS leader broadcast + players**
+   - Exactly one elected publisher task writes R/P/S choice to Memcached
+   - Interval configurable from UI
+   - Non-manager tasks act as players:
+     - roll random rock/paper/scissors each round
+     - compare against latest leader move
+     - update per-task score (+1 win, -1 loss, 0 tie)
+
+7. **Aggregator service (port 8090)**
+   - Reads ARM events from Memcached
+   - Exposes scoreboard with:
+     - counts (`on`, `off`, `toggles`)
+     - cumulative `score`
+     - `current_on_state`
+     - `last_state`, `last_event_at`
 
 ---
 
-## 1) Get the code
+## 2) Architecture
+
+### Services
+
+Defined in `docker-stack.yml`:
+
+- `clawbucket`
+  - Flask app (`app.py`), UI + APIs
+  - Exposes `8080`
+  - Mounts Docker socket for Swarm state/scale APIs
+
+- `clawbucket-aggregator`
+  - Flask app (`aggregator.py`)
+  - Exposes `8090`
+
+- `memcached`
+  - Shared transient state bus
+  - Internal-only (no host port)
+
+### Data flow
+
+1. User interacts with 8080 UI
+2. App writes/reads operational state from Swarm + Memcached
+3. Leader publisher emits shared RPS state
+4. Non-leader tasks consume RPS state and update scores
+5. Aggregator reads Memcached event streams and provides compact scoreboard API
+
+---
+
+## 3) Memcached key map (current)
+
+### Chat
+- `clawbucket:chat:messages`
+  - JSON list of chat messages
+
+### Arm events
+- `clawbucket:arm:events`
+  - JSON list of arm toggle events
+
+### RPS
+- `clawbucket:rps:state`
+  - JSON object with latest leader choice + metadata
+- `clawbucket:rps:interval_seconds`
+  - current configured round interval
+
+### Player score state
+- `clawbucket:rps:score:<task_id>`
+  - integer score per player task
+- `clawbucket:rps:last_seen:<task_id>`
+  - last consumed RPS round id (timestamp) for idempotence
+
+### Heartbeats
+- `clawbucket:heartbeat:<task_name>`
+  - heartbeat text (`Ping from ...`) with short TTL
+
+> Note: this is simulation-grade state handling, not production-grade locking/transactions.
+
+---
+
+## 4) API reference
+
+## Main app (`:8080`)
+
+- `GET /api/swarm`
+  - service replica state and tile metadata
+
+- `POST /api/scale`
+  - body: `{ "replicas": <int> }`
+
+- `GET /api/chat`
+- `POST /api/chat`
+  - body: `{ "text": "..." }`
+
+- `GET /api/arm/events`
+- `POST /api/arm`
+  - body: `{ "task_id": "...", "bot": "...", "state": "on|off" }`
+
+- `GET /api/rps`
+  - latest leader RPS state + configured interval
+
+- `POST /api/rps/config`
+  - body: `{ "interval_seconds": <int 2..120> }`
+
+## Aggregator (`:8090`)
+
+- `GET /healthz`
+- `GET /api/scoreboard`
+  - ARM scoreboard + `current_on_state`
+
+---
+
+## 5) UI behavior details
+
+### Tile behavior
+- One tile per running task
+- Manager tile:
+  - gold outline
+  - `MANAGER` badge
+  - no player score panel
+- Non-manager tiles:
+  - large score text
+  - green for zero/positive
+  - red for negative
+
+### Arm controls
+- Button text fixed as `Arm`
+- Button green only when ON
+- Top status pill green only when ON
+
+### RPS controls
+- Numeric interval input + apply button
+- Changes are stored in Memcached and affect all tasks
+
+---
+
+## 6) Leader / manager election behavior in app
+
+The app uses Swarm metadata to derive a single manager/publisher tile deterministically.
+
+High-level rule:
+1. Find Swarm leader node
+2. Among running service tasks on that node, select lowest slot
+3. If no match, fallback to first running task by slot
+
+This same election logic is used to:
+- mark `is_manager` in tile API data
+- choose single RPS publisher
+
+All other tasks are treated as players.
+
+---
+
+## 7) Deploy / update workflow
+
+From repo root:
 
 ```bash
-git clone https://github.com/mallond/clawbucket.git
-cd clawbucket
-```
-
----
-
-## 2) Build and push image
-
-Use your own Docker Hub namespace if needed.
-
-```bash
+# build local image tag used by current stack
 docker build -t mallond/clawbucket:latest .
-docker push mallond/clawbucket:latest
-```
 
-If you changed image name, update `docker-stack.yml` accordingly.
-
----
-
-## 3) Initialize Swarm (manager)
-
-On the manager node:
-
-```bash
-docker swarm init
-```
-
-If already initialized, Docker will say so — that's fine.
-
-Check role:
-
-```bash
-docker info | grep -E "Swarm|Is Manager"
-```
-
-You want:
-- `Swarm: active`
-- `Is Manager: true`
-
----
-
-## 4) Deploy Bob's World
-
-From the manager node, inside repo:
-
-```bash
+# deploy/update stack
 docker stack deploy -c docker-stack.yml clawbucket
-```
 
-Watch rollout:
-
-```bash
+# check services
 docker service ls
 docker service ps clawbucket_clawbucket
+docker service ps clawbucket_clawbucket-aggregator
+docker service ps clawbucket_memcached
 ```
+
+Open:
+- `http://<host>:8080`
+- `http://<host>:8090/api/scoreboard`
 
 ---
 
-## 5) Open dashboard
+## 8) Troubleshooting notes
 
-```text
-http://<manager-or-node-ip>:8080
-```
+### 8080 serves old UI
+- Ensure no extra local `python app.py` process is binding 8080 outside Swarm
+- Hard refresh browser (Cmd+Shift+R)
 
-You should see:
-- service status (`running / desired`)
-- replica slider + **Scale Swarm** button
-- replica chicklets (generated names + task/node info)
+### `memcached unavailable`
+- Verify `clawbucket_memcached` service is `1/1`
+- Confirm app and aggregator use correct host env (`MEMCACHED_HOST`)
+- Verify image actually contains latest `app.py`/`aggregator.py`
 
----
+### 8090 empty/404/failing
+- Check aggregator service exists and is healthy
+- Review logs:
+  - `docker service logs clawbucket_clawbucket-aggregator`
 
-## 6) Share with a friend (production-ish quick path)
-
-### A) Network access
-
-Allow TCP **8080** inbound to the manager/node IP.
-
-### B) Give friend URL
-
-- `http://<public-ip>:8080`
-- or `http://<your-domain>:8080`
-
-### C) Basic health checks
-
-```bash
-curl -s http://127.0.0.1:8080/api/swarm | jq
-curl -s http://127.0.0.1:8080/api/whoami | jq
-```
-
-If `jq` isn't installed:
-
-```bash
-curl -s http://127.0.0.1:8080/api/swarm
-```
+### Scores not updating
+- Confirm RPS state is changing via `GET /api/rps`
+- Confirm one publisher exists and non-manager tiles are present
+- Confirm player score keys are updating in Memcached
 
 ---
 
-## Multi-node Swarm (optional)
+## 9) Security / production disclaimer
 
-On manager, get worker join command:
+This is intentionally simulation-first and **not production hardened**.
 
-```bash
-docker swarm join-token worker
-```
+Current tradeoffs:
+- Docker socket mounted into app service
+- Memcached used as shared transient bus without auth
+- No strict distributed locks/consensus in app layer
 
-Run printed `docker swarm join ...` on each worker.
-
-Check nodes on manager:
-
-```bash
-docker node ls
-```
-
----
-
-## Hot Deploy (quick rebuild + rolling update)
-
-Run from manager node:
-
-```bash
-cd ~/source/clawbucket
-git pull
-docker build -t mallond/clawbucket:latest .
-docker push mallond/clawbucket:latest
-docker stack deploy -c docker-stack.yml clawbucket
-```
-
-Watch rollout:
-
-```bash
-docker service ps clawbucket_clawbucket --no-trunc
-```
-
-## Updating to latest version
-
-```bash
-cd clawbucket
-git pull
-docker build -t mallond/clawbucket:latest .
-docker push mallond/clawbucket:latest
-docker stack deploy -c docker-stack.yml clawbucket
-```
+For production, plan to:
+- split control-plane permissions
+- add authn/authz
+- isolate network paths
+- move to durable state store and stronger coordination primitives
 
 ---
 
-## Troubleshooting
+## 10) What to track next (for eventual SKILL.md extraction)
 
-### Error: `this node is not a swarm manager`
-Run deploy on the manager node, or initialize this node as manager:
+Potential sections for future `SKILL.md`:
+- **Purpose / constraints** (simulation-first)
+- **Service topology** (clawbucket, aggregator, memcached)
+- **Key contracts** (Memcached schema + API contracts)
+- **Election rules** (single manager/publisher rule)
+- **Game loop semantics** (publisher, players, scoring)
+- **UI invariants** (arm behavior, score styling)
+- **Operational playbook** (deploy, verify, recover)
+- **Known limitations** and hardening backlog
 
-```bash
-docker swarm init
-```
-
-### Browser shows `ERR_EMPTY_RESPONSE` during scaling
-This can happen briefly while tasks are replaced. Current build includes retry logic; refresh and it should recover.
-
-### Service not found in dashboard API
-Ensure stack/service name is exactly:
-
-```text
-clawbucket_clawbucket
-```
-
-Check:
-
-```bash
-docker service ls
-```
-
-### Port unreachable externally
-- verify host firewall/security group allows 8080
-- verify router/NAT forwards 8080 to host (if behind home router)
-
----
-
-## Security note
-
-This demo mounts Docker socket into the app container (`/var/run/docker.sock`), which gives powerful control over Docker on that host. Good for controlled experiments; not ideal for hardened public production.
-
-Recommended hardening for production:
-
-- Split services:
-  - **dashboard-ui** (public, read-only, no Docker socket)
-  - **swarm-controller** (private/internal, handles scale operations)
-- Protect scale actions with authentication + authorization (RBAC), rate limiting, and audit logs.
-- Isolate network paths:
-  - expose only UI through reverse proxy with TLS
-  - keep controller on private/internal overlay network
-  - optionally restrict admin routes by IP allowlist/VPN
-- Apply least privilege:
-  - use a Docker socket proxy with only required endpoints
-  - run containers non-root, read-only filesystem, dropped capabilities, `no-new-privileges`
-- Add server-side safety rails:
-  - enforce min/max replica bounds
-  - cooldown between scale operations
-
-For safer architecture, split control plane and app plane, add auth, and avoid exposing Docker socket to internet-facing services.
-
----
-
-## Clean Room
-
-Use this to fully reset a test host before re-running the deployment steps.
-
-```bash
-# 1) Remove the stack
-docker stack rm clawbucket
-
-# 2) Remove unused containers/networks/images/volumes
-docker system prune -a --volumes -f
-
-# 3) Leave swarm mode (reset node swarm state)
-docker swarm leave --force
-```
-
-Optional: remove local source checkout
-
-```bash
-cd ~
-rm -rf ~/source/clawbucket
-```
-
-## Remove stack
-
-```bash
-docker stack rm clawbucket
-```
+This README is now the canonical snapshot of current behavior.
