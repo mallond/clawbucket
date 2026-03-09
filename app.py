@@ -5,6 +5,7 @@ import os
 import socket
 from datetime import datetime, timezone
 from threading import Thread
+import time
 
 import docker
 from docker.errors import DockerException, NotFound
@@ -21,6 +22,8 @@ CHAT_KEY = "clawbucket:chat:messages"
 CHAT_LIMIT = 40
 ARM_EVENTS_KEY = "clawbucket:arm:events"
 ARM_EVENTS_LIMIT = 500
+HEARTBEAT_INTERVAL_SECONDS = 10
+HEARTBEAT_TTL_SECONDS = 20
 
 
 def color_from_text(text: str) -> str:
@@ -162,6 +165,39 @@ def append_arm_event(task_id: str, bot_name: str, state: str):
             pass
 
     return event
+
+
+def task_heartbeat_key() -> str:
+    task_name = os.environ.get("TASK_NAME", HOSTNAME)
+    return f"clawbucket:heartbeat:{task_name}"
+
+
+def heartbeat_payload() -> str:
+    task_name = os.environ.get("TASK_NAME", HOSTNAME)
+    ts = datetime.now(timezone.utc).isoformat()
+    return f"Ping from {task_name} at {ts}"
+
+
+def write_task_heartbeat_once():
+    client = None
+    try:
+        client = memcache_client()
+        client.set(task_heartbeat_key(), heartbeat_payload(), expire=HEARTBEAT_TTL_SECONDS)
+    except Exception:
+        pass
+    finally:
+        try:
+            if client:
+                client.close()
+        except Exception:
+            pass
+
+
+def heartbeat_loop():
+    # Light simulation only: each task self-reports liveness via expiring key.
+    while True:
+        write_task_heartbeat_once()
+        time.sleep(HEARTBEAT_INTERVAL_SECONDS)
 
 
 def generated_name(task_id: str) -> str:
@@ -694,4 +730,5 @@ def index():
 
 
 if __name__ == "__main__":
+    Thread(target=heartbeat_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=8080)
