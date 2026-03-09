@@ -672,7 +672,7 @@ def index():
       const armBtn = tileEl.querySelector('.arm-btn');
       if (armBtn) {
         armBtn.classList.toggle('on', isOn);
-        armBtn.textContent = isOn ? 'Arm ON' : 'Arm OFF';
+        armBtn.textContent = 'Arm';
       }
     }
 
@@ -870,7 +870,7 @@ def index():
             <p><strong>Slot:</strong> ${r.slot}</p>
             <p><strong>Task:</strong> ${r.id.slice(0, 12)}</p>
             <p><strong>Node:</strong> ${r.node_id.slice(0, 12)}</p>
-            <button type="button" class="arm-btn">Arm OFF</button>
+            <button type="button" class="arm-btn">Arm</button>
           `;
           applyTileVisualState(el, isOn);
           grid.appendChild(el);
