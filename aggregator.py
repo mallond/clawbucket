@@ -40,11 +40,22 @@ def load_arm_events():
 
 
 def score_from_events(events):
-    by_bot = defaultdict(lambda: {"bot": "", "task_id": "", "on": 0, "off": 0, "toggles": 0, "score": 0})
+    by_bot = defaultdict(lambda: {
+        "bot": "",
+        "task_id": "",
+        "on": 0,
+        "off": 0,
+        "toggles": 0,
+        "score": 0,
+        "current_on_state": False,
+        "last_state": None,
+        "last_event_at": None,
+    })
     for ev in events:
         bot = ev.get("bot") or "unknown"
         task_id = ev.get("task_id") or ""
         state = (ev.get("state") or "").lower()
+        at = ev.get("at")
 
         row = by_bot[task_id or bot]
         row["bot"] = bot
@@ -57,7 +68,13 @@ def score_from_events(events):
             row["off"] += 1
             row["score"] -= 1
 
-    scoreboard = sorted(by_bot.values(), key=lambda r: (r["score"], r["toggles"]), reverse=True)
+        # Events are stored in append order; this yields current state.
+        if state in {"on", "off"}:
+            row["last_state"] = state
+            row["current_on_state"] = state == "on"
+            row["last_event_at"] = at
+
+    scoreboard = sorted(by_bot.values(), key=lambda r: (r["current_on_state"], r["score"], r["toggles"]), reverse=True)
     return scoreboard
 
 
@@ -74,6 +91,7 @@ def api_scoreboard():
         "events": len(events),
         "scoreboard": board,
         "scoring": "score = +1 for ARM ON, -1 for ARM OFF",
+        "state_rule": "current_on_state is derived from the latest arm event per bot",
         "source": "memcached",
     })
 
