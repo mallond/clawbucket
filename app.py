@@ -6,6 +6,7 @@ import socket
 from datetime import datetime, timezone
 from threading import Thread
 import time
+import random
 
 import docker
 from docker.errors import DockerException, NotFound
@@ -24,6 +25,10 @@ ARM_EVENTS_KEY = "clawbucket:arm:events"
 ARM_EVENTS_LIMIT = 500
 HEARTBEAT_INTERVAL_SECONDS = 10
 HEARTBEAT_TTL_SECONDS = 20
+RPS_STATE_KEY = "clawbucket:rps:state"
+RPS_INTERVAL_KEY = "clawbucket:rps:interval_seconds"
+RPS_DEFAULT_INTERVAL_SECONDS = 10
+RPS_TTL_SECONDS = 20
 
 
 def color_from_text(text: str) -> str:
@@ -200,6 +205,96 @@ def heartbeat_loop():
         time.sleep(HEARTBEAT_INTERVAL_SECONDS)
 
 
+def get_rps_interval_seconds() -> int:
+    client = None
+    try:
+        client = memcache_client()
+        raw = client.get(RPS_INTERVAL_KEY)
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        if raw is None:
+            return RPS_DEFAULT_INTERVAL_SECONDS
+        value = int(raw)
+        return max(2, min(120, value))
+    except Exception:
+        return RPS_DEFAULT_INTERVAL_SECONDS
+    finally:
+        try:
+            if client:
+                client.close()
+        except Exception:
+            pass
+
+
+def set_rps_interval_seconds(value: int) -> int:
+    value = max(2, min(120, int(value)))
+    client = None
+    try:
+        client = memcache_client()
+        client.set(RPS_INTERVAL_KEY, str(value), expire=86400)
+    finally:
+        try:
+            if client:
+                client.close()
+        except Exception:
+            pass
+    return value
+
+
+def write_rps_state_once():
+    # Light simulation: slot 1 publishes shared random R/P/S for everyone.
+    if str(os.environ.get("TASK_SLOT", "")) != "1":
+        return
+
+    choice = random.choice(["rock", "paper", "scissors"])
+    task_name = os.environ.get("TASK_NAME", HOSTNAME)
+    payload = {
+        "choice": choice,
+        "from": task_name,
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    client = None
+    try:
+        client = memcache_client()
+        client.set(RPS_STATE_KEY, json.dumps(payload), expire=RPS_TTL_SECONDS)
+    except Exception:
+        pass
+    finally:
+        try:
+            if client:
+                client.close()
+        except Exception:
+            pass
+
+
+def read_rps_state():
+    client = None
+    try:
+        client = memcache_client()
+        raw = client.get(RPS_STATE_KEY)
+        if not raw:
+            return None
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+    finally:
+        try:
+            if client:
+                client.close()
+        except Exception:
+            pass
+
+
+def rps_loop():
+    while True:
+        write_rps_state_once()
+        time.sleep(get_rps_interval_seconds())
+
+
 def generated_name(task_id: str) -> str:
     adjectives = [
         "Brave",
@@ -235,6 +330,15 @@ def get_service_state():
     attrs = service.attrs
     desired = attrs["Spec"]["Mode"]["Replicated"]["Replicas"]
 
+    manager_node_ids = set()
+    try:
+        for node in client.nodes.list():
+            nattrs = node.attrs or {}
+            if nattrs.get("ManagerStatus"):
+                manager_node_ids.add(nattrs.get("ID"))
+    except Exception:
+        pass
+
     tasks_raw = service.tasks()
     running = []
     for task in tasks_raw:
@@ -252,6 +356,7 @@ def get_service_state():
                     "node_id": node_id,
                     "name": generated_name(task_id),
                     "color": color_from_text(task_id),
+                    "is_manager": node_id in manager_node_ids,
                 }
             )
 
@@ -332,6 +437,25 @@ def api_arm_post():
     if not event:
         return jsonify({"error": "invalid payload or memcached unavailable"}), 400
     return jsonify({"ok": True, "event": event}), 201
+
+
+@app.get("/api/rps")
+def api_rps_get():
+    return jsonify({
+        "state": read_rps_state(),
+        "interval_seconds": get_rps_interval_seconds(),
+        "ttl_seconds": RPS_TTL_SECONDS,
+    })
+
+
+@app.post("/api/rps/config")
+def api_rps_config_post():
+    data = request.get_json(silent=True) or {}
+    interval = data.get("interval_seconds")
+    if not isinstance(interval, int):
+        return jsonify({"error": "interval_seconds must be an integer"}), 400
+    value = set_rps_interval_seconds(interval)
+    return jsonify({"ok": True, "interval_seconds": value})
 
 
 @app.get("/")
@@ -420,6 +544,20 @@ def index():
       background: #2d7c4a;
       border-color: #3fb96d;
     }
+    .chip.manager {
+      border-color: #d6b45b;
+      box-shadow: inset 0 0 0 1px rgba(214, 180, 91, 0.35);
+    }
+    .manager-badge {
+      display: inline-block;
+      margin-left: 6px;
+      font-size: .7rem;
+      font-weight: 800;
+      color: #201700;
+      background: #d6b45b;
+      border-radius: 999px;
+      padding: 3px 7px;
+    }
   </style>
 </head>
 <body>
@@ -441,6 +579,19 @@ def index():
     </div>
 
     <div class=\"grid\" id=\"grid\"></div>
+
+    <div class=\"panel\" style=\"margin-top:16px\">
+      <div class=\"row\">
+        <strong>Rock / Paper / Scissors Broadcast (Memcached)</strong>
+      </div>
+      <div class=\"row\" style=\"margin-top:10px\">
+        <label for=\"rpsInterval\">Interval (seconds):</label>
+        <input id=\"rpsInterval\" type=\"number\" min=\"2\" max=\"120\" step=\"1\" value=\"10\" style=\"width:90px\" />
+        <button id=\"rpsApply\">Apply Interval</button>
+        <span class=\"meta\" id=\"rpsMsg\"></span>
+      </div>
+      <div class=\"meta\" id=\"rpsState\" style=\"margin-top:8px\">RPS: ...</div>
+    </div>
 
     <div class=\"panel\" style=\"margin-top:16px\">
       <div class=\"row\">
@@ -466,6 +617,10 @@ def index():
     const chatSend = document.getElementById('chatSend');
     const chatMsg = document.getElementById('chatMsg');
     const chatFeed = document.getElementById('chatFeed');
+    const rpsInterval = document.getElementById('rpsInterval');
+    const rpsApply = document.getElementById('rpsApply');
+    const rpsMsg = document.getElementById('rpsMsg');
+    const rpsState = document.getElementById('rpsState');
     let pendingTarget = null;
     let currentDesired = null;
     let currentRunning = null;
@@ -608,6 +763,48 @@ def index():
       }
     });
 
+    async function loadRps() {
+      try {
+        const res = await fetch('/api/rps');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'RPS unavailable');
+        if (document.activeElement !== rpsInterval) {
+          rpsInterval.value = data.interval_seconds;
+        }
+        const s = data.state;
+        rpsState.textContent = s
+          ? `RPS: ${String(s.choice || '').toUpperCase()} from ${s.from || 'unknown'} at ${s.at || 'unknown'} (TTL ${data.ttl_seconds}s)`
+          : `RPS: waiting for first broadcast... (TTL ${data.ttl_seconds}s)`;
+      } catch (e) {
+        rpsMsg.textContent = e.message;
+      }
+    }
+
+    rpsApply.addEventListener('click', async () => {
+      const n = parseInt(rpsInterval.value, 10);
+      if (!Number.isInteger(n) || n < 2 || n > 120) {
+        rpsMsg.textContent = 'Interval must be 2-120 seconds';
+        return;
+      }
+      rpsApply.disabled = true;
+      rpsMsg.textContent = 'Saving...';
+      try {
+        const res = await fetch('/api/rps/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ interval_seconds: n }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to set interval');
+        rpsMsg.textContent = `Interval set to ${data.interval_seconds}s`;
+        await loadRps();
+      } catch (e) {
+        rpsMsg.textContent = e.message;
+      } finally {
+        rpsApply.disabled = false;
+      }
+    });
+
     async function loadState() {
       try {
         const res = await fetch('/api/swarm');
@@ -648,12 +845,12 @@ def index():
         for (const r of data.replicas) {
           const el = document.createElement('div');
           const isOn = tileToggles[r.id] === true;
-          el.className = 'chip';
+          el.className = `chip ${r.is_manager ? 'manager' : ''}`;
           el.dataset.taskId = r.id;
           el.dataset.botName = r.name;
           el.style.setProperty('--chip-color', r.color);
           el.innerHTML = `
-            <span class="status">OFF</span>
+            <span class="status">OFF</span>${r.is_manager ? '<span class="manager-badge">MANAGER</span>' : ''}
             <h3>${r.name}</h3>
             <p><strong>Slot:</strong> ${r.slot}</p>
             <p><strong>Task:</strong> ${r.id.slice(0, 12)}</p>
@@ -721,8 +918,10 @@ def index():
 
     loadState();
     loadChat();
+    loadRps();
     setInterval(loadState, 3000);
     setInterval(loadChat, 4000);
+    setInterval(loadRps, 3000);
   </script>
 </body>
 </html>
@@ -731,4 +930,5 @@ def index():
 
 if __name__ == "__main__":
     Thread(target=heartbeat_loop, daemon=True).start()
+    Thread(target=rps_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=8080)
