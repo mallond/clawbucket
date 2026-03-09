@@ -1,5 +1,6 @@
 from flask import Flask, jsonify, request
 import hashlib
+import json
 import os
 import socket
 from datetime import datetime, timezone
@@ -7,12 +8,17 @@ from threading import Thread
 
 import docker
 from docker.errors import DockerException, NotFound
+from pymemcache.client.base import Client as MemcacheClient
 
 app = Flask(__name__)
 
 STARTED_AT = datetime.now(timezone.utc).isoformat()
 HOSTNAME = socket.gethostname()
 SERVICE_NAME = os.environ.get("SWARM_SERVICE", "clawbucket_clawbucket")
+MEMCACHED_HOST = os.environ.get("MEMCACHED_HOST", "memcached")
+MEMCACHED_PORT = int(os.environ.get("MEMCACHED_PORT", "11211"))
+CHAT_KEY = "clawbucket:chat:messages"
+CHAT_LIMIT = 40
 
 
 def color_from_text(text: str) -> str:
@@ -35,6 +41,52 @@ def whoami_payload():
 
 def docker_client():
     return docker.from_env()
+
+
+def memcache_client():
+    return MemcacheClient((MEMCACHED_HOST, MEMCACHED_PORT), connect_timeout=0.5, timeout=0.5)
+
+
+def load_chat_messages():
+    try:
+        with memcache_client() as client:
+            raw = client.get(CHAT_KEY)
+        if not raw:
+            return []
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        data = json.loads(raw)
+        if isinstance(data, list):
+            return data[-CHAT_LIMIT:]
+    except Exception:
+        pass
+    return []
+
+
+def append_chat_message(text: str):
+    text = (text or "").strip()
+    if not text:
+        return None
+
+    message = {
+        "id": hashlib.md5(f"{datetime.now(timezone.utc).isoformat()}:{HOSTNAME}:{text}".encode("utf-8")).hexdigest()[:12],
+        "from": os.environ.get("TASK_NAME", HOSTNAME),
+        "host": HOSTNAME,
+        "text": text[:280],
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    messages = load_chat_messages()
+    messages.append(message)
+    messages = messages[-CHAT_LIMIT:]
+
+    try:
+        with memcache_client() as client:
+            client.set(CHAT_KEY, json.dumps(messages), expire=86400)
+    except Exception:
+        return None
+
+    return message
 
 
 def generated_name(task_id: str) -> str:
@@ -133,6 +185,24 @@ def api_scale():
 
     Thread(target=do_scale, args=(replicas,), daemon=True).start()
     return jsonify({"ok": True, "service": SERVICE_NAME, "desired_replicas": replicas, "status": "scaling"}), 202
+
+
+@app.get("/api/chat")
+def api_chat_get():
+    return jsonify({"messages": load_chat_messages(), "source": "memcached"})
+
+
+@app.post("/api/chat")
+def api_chat_post():
+    data = request.get_json(silent=True) or {}
+    text = (data.get("text") or "").strip()
+    if not text:
+        return jsonify({"error": "text is required"}), 400
+
+    msg = append_chat_message(text)
+    if not msg:
+        return jsonify({"error": "memcached unavailable"}), 503
+    return jsonify({"ok": True, "message": msg}), 201
 
 
 @app.get("/")
@@ -242,6 +312,18 @@ def index():
     </div>
 
     <div class=\"grid\" id=\"grid\"></div>
+
+    <div class=\"panel\" style=\"margin-top:16px\">
+      <div class=\"row\">
+        <strong>Container Conversation (Memcached simulation)</strong>
+      </div>
+      <div class=\"row\" style=\"margin-top:10px\">
+        <input id=\"chatInput\" type=\"text\" maxlength=\"280\" placeholder=\"Say something to other containers...\" style=\"flex:1;min-width:240px\" />
+        <button id=\"chatSend\">Send</button>
+      </div>
+      <div class=\"meta\" id=\"chatMsg\" style=\"margin-top:8px\"></div>
+      <div id=\"chatFeed\" style=\"margin-top:10px; display:grid; gap:6px;\"></div>
+    </div>
   </div>
 
   <script>
@@ -251,6 +333,10 @@ def index():
     const replicasInput = document.getElementById('replicas');
     const applyBtn = document.getElementById('apply');
     const msg = document.getElementById('msg');
+    const chatInput = document.getElementById('chatInput');
+    const chatSend = document.getElementById('chatSend');
+    const chatMsg = document.getElementById('chatMsg');
+    const chatFeed = document.getElementById('chatFeed');
     let pendingTarget = null;
     let currentDesired = null;
     let currentRunning = null;
@@ -320,6 +406,66 @@ def index():
     // Scaling should happen only by clicking the button.
     replicasInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') e.preventDefault();
+    });
+
+    function renderChat(messages) {
+      const rows = (messages || []).slice(-12).reverse();
+      chatFeed.innerHTML = '';
+      for (const m of rows) {
+        const row = document.createElement('div');
+        row.className = 'meta';
+        row.style.padding = '6px 8px';
+        row.style.border = '1px solid #2b3a67';
+        row.style.borderRadius = '8px';
+        row.style.background = '#0f1730';
+        row.textContent = `[${(m.at || '').slice(11, 19)}] ${m.from || 'unknown'}: ${m.text || ''}`;
+        chatFeed.appendChild(row);
+      }
+      if (!rows.length) {
+        chatFeed.innerHTML = '<div class="meta">No messages yet.</div>';
+      }
+    }
+
+    async function loadChat() {
+      try {
+        const res = await fetch('/api/chat');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Chat unavailable');
+        renderChat(data.messages || []);
+      } catch (e) {
+        chatMsg.textContent = e.message;
+      }
+    }
+
+    async function sendChat() {
+      const text = (chatInput.value || '').trim();
+      if (!text) return;
+      chatSend.disabled = true;
+      chatMsg.textContent = 'Sending...';
+      try {
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Send failed');
+        chatInput.value = '';
+        chatMsg.textContent = 'Sent.';
+        await loadChat();
+      } catch (e) {
+        chatMsg.textContent = e.message;
+      } finally {
+        chatSend.disabled = false;
+      }
+    }
+
+    chatSend.addEventListener('click', sendChat);
+    chatInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        sendChat();
+      }
     });
 
     async function loadState() {
@@ -433,7 +579,9 @@ def index():
     });
 
     loadState();
+    loadChat();
     setInterval(loadState, 3000);
+    setInterval(loadChat, 4000);
   </script>
 </body>
 </html>
