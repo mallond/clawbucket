@@ -50,9 +50,10 @@ def memcache_client():
 
 
 def load_chat_messages():
+    client = None
     try:
-        with memcache_client() as client:
-            raw = client.get(CHAT_KEY)
+        client = memcache_client()
+        raw = client.get(CHAT_KEY)
         if not raw:
             return []
         if isinstance(raw, bytes):
@@ -62,6 +63,12 @@ def load_chat_messages():
             return data[-CHAT_LIMIT:]
     except Exception:
         pass
+    finally:
+        try:
+            if client:
+                client.close()
+        except Exception:
+            pass
     return []
 
 
@@ -82,19 +89,27 @@ def append_chat_message(text: str):
     messages.append(message)
     messages = messages[-CHAT_LIMIT:]
 
+    client = None
     try:
-        with memcache_client() as client:
-            client.set(CHAT_KEY, json.dumps(messages), expire=86400)
+        client = memcache_client()
+        client.set(CHAT_KEY, json.dumps(messages), expire=86400)
     except Exception:
         return None
+    finally:
+        try:
+            if client:
+                client.close()
+        except Exception:
+            pass
 
     return message
 
 
 def load_arm_events():
+    client = None
     try:
-        with memcache_client() as client:
-            raw = client.get(ARM_EVENTS_KEY)
+        client = memcache_client()
+        raw = client.get(ARM_EVENTS_KEY)
         if not raw:
             return []
         if isinstance(raw, bytes):
@@ -104,6 +119,12 @@ def load_arm_events():
             return data[-ARM_EVENTS_LIMIT:]
     except Exception:
         pass
+    finally:
+        try:
+            if client:
+                client.close()
+        except Exception:
+            pass
     return []
 
 
@@ -127,11 +148,18 @@ def append_arm_event(task_id: str, bot_name: str, state: str):
     events.append(event)
     events = events[-ARM_EVENTS_LIMIT:]
 
+    client = None
     try:
-        with memcache_client() as client:
-            client.set(ARM_EVENTS_KEY, json.dumps(events), expire=86400)
+        client = memcache_client()
+        client.set(ARM_EVENTS_KEY, json.dumps(events), expire=86400)
     except Exception:
         return None
+    finally:
+        try:
+            if client:
+                client.close()
+        except Exception:
+            pass
 
     return event
 

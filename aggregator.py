@@ -17,9 +17,10 @@ def memcache_client():
 
 
 def load_arm_events():
+    client = None
     try:
-        with memcache_client() as client:
-            raw = client.get(ARM_EVENTS_KEY)
+        client = memcache_client()
+        raw = client.get(ARM_EVENTS_KEY)
         if not raw:
             return []
         if isinstance(raw, bytes):
@@ -29,6 +30,12 @@ def load_arm_events():
             return data
     except Exception:
         pass
+    finally:
+        try:
+            if client:
+                client.close()
+        except Exception:
+            pass
     return []
 
 
