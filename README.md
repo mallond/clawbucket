@@ -8,6 +8,7 @@
 - Leader-published Rock/Paper/Scissors (RPS) rounds
 - Non-leader player scoring with live tile display
 - Aggregator API for scoreboard + current ON/OFF state
+- Ollama service for local model pulls/tests (`smollm2:135m`)
 
 This README captures the current behavior in detail so we can evolve it safely and eventually extract a formal `SKILL.md`.
 
@@ -59,6 +60,11 @@ A Swarm service (`clawbucket`) runs multiple replicas. The UI shows one tile per
      - `current_on_state`
      - `last_state`, `last_event_at`
 
+8. **Ollama model service (port 11434)**
+   - Dedicated service for local LLM runtime in Swarm
+   - Persistent model storage via named volume
+   - Verified model: `smollm2:135m`
+
 ---
 
 ## 2) Architecture
@@ -79,6 +85,11 @@ Defined in `docker-stack.yml`:
 - `memcached`
   - Shared transient state bus
   - Internal-only (no host port)
+
+- `ollama`
+  - Local inference/model service
+  - Exposes `11434`
+  - Uses volume `ollama_data` for model persistence
 
 ### Data flow
 
@@ -209,11 +220,31 @@ docker service ls
 docker service ps clawbucket_clawbucket
 docker service ps clawbucket_clawbucket-aggregator
 docker service ps clawbucket_memcached
+docker service ps clawbucket_ollama
 ```
 
 Open:
 - `http://<host>:8080`
 - `http://<host>:8090/api/scoreboard`
+- `http://<host>:11434`
+
+### Ollama model load + test
+
+```bash
+# find ollama container from the swarm service
+OLLAMA_CID=$(docker ps --filter label=com.docker.swarm.service.name=clawbucket_ollama -q | head -n1)
+
+# pull model into persistent ollama_data volume
+docker exec -it "$OLLAMA_CID" ollama pull smollm2:135m
+
+# list models to confirm
+
+docker exec -it "$OLLAMA_CID" ollama list
+
+# quick generation test
+
+docker exec -it "$OLLAMA_CID" ollama run smollm2:135m "Reply with exactly OLLAMA_OK"
+```
 
 ---
 
@@ -237,6 +268,13 @@ Open:
 - Confirm RPS state is changing via `GET /api/rps`
 - Confirm one publisher exists and non-manager tiles are present
 - Confirm player score keys are updating in Memcached
+
+### Ollama service not ready / model not found
+- Check service state: `docker service ps clawbucket_ollama`
+- If service is still `Preparing`, wait for image/bootstrap completion
+- Re-run pull from container:
+  - `docker exec -it <ollama_cid> ollama pull smollm2:135m`
+- Verify with: `docker exec -it <ollama_cid> ollama list`
 
 ---
 
