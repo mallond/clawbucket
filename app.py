@@ -1017,8 +1017,15 @@ def index():
         }
 
         const tileToggles = loadTileToggles();
+        const sortedReplicas = [...(data.replicas || [])].sort((a, b) => {
+          const sa = Number.isFinite(a.score) ? a.score : 0;
+          const sb = Number.isFinite(b.score) ? b.score : 0;
+          if (sb !== sa) return sb - sa;
+          return (a.slot || 0) - (b.slot || 0);
+        });
+
         grid.innerHTML = '';
-        for (const r of data.replicas) {
+        for (const r of sortedReplicas) {
           const el = document.createElement('div');
           const isOn = tileToggles[r.id] === true;
           el.className = `chip ${r.is_manager ? 'manager' : ''}`;
