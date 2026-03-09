@@ -196,6 +196,13 @@ def index():
       padding: 12px;
       position: relative;
       overflow: hidden;
+      cursor: pointer;
+      transition: background-color .2s ease, border-color .2s ease, box-shadow .2s ease;
+    }
+    .chip.active {
+      background: #174d2e;
+      border-color: #35a862;
+      box-shadow: inset 0 0 0 1px rgba(83, 214, 134, 0.2);
     }
     .chip::before {
       content: "";
@@ -206,7 +213,8 @@ def index():
     }
     .chip h3 { margin: 4px 0 8px; font-size: 1.02rem; }
     .chip p { margin: 4px 0; color: var(--muted); font-size: .9rem; }
-    .status { display: inline-block; font-size: .78rem; font-weight: 700; letter-spacing: .02em; padding: 4px 8px; border-radius: 999px; background: #1b2f66; }
+    .status { display: inline-block; font-size: .78rem; font-weight: 700; letter-spacing: .02em; padding: 4px 8px; border-radius: 999px; background: #24314f; }
+    .chip.active .status { background: #2d7c4a; }
   </style>
 </head>
 <body>
@@ -241,6 +249,27 @@ def index():
     let currentDesired = null;
     let currentRunning = null;
     let isEditingReplicaInput = false;
+    const TILE_TOGGLE_KEY = 'clawbucket.tileToggles';
+
+    function loadTileToggles() {
+      try {
+        const raw = localStorage.getItem(TILE_TOGGLE_KEY);
+        const parsed = raw ? JSON.parse(raw) : {};
+        return (parsed && typeof parsed === 'object') ? parsed : {};
+      } catch {
+        return {};
+      }
+    }
+
+    function saveTileToggles(toggles) {
+      localStorage.setItem(TILE_TOGGLE_KEY, JSON.stringify(toggles));
+    }
+
+    function setTileToggle(taskId, isOn) {
+      const toggles = loadTileToggles();
+      toggles[taskId] = isOn;
+      saveTileToggles(toggles);
+    }
 
 
     replicasInput.addEventListener('focus', () => {
@@ -296,18 +325,27 @@ def index():
             : `Reconciling: running ${data.running_count} / desired ${data.desired_replicas}`;
         }
 
+        const tileToggles = loadTileToggles();
         grid.innerHTML = '';
         for (const r of data.replicas) {
           const el = document.createElement('div');
-          el.className = 'chip';
+          const isOn = tileToggles[r.id] === true;
+          el.className = `chip ${isOn ? 'active' : ''}`;
           el.style.setProperty('--chip-color', r.color);
           el.innerHTML = `
-            <span class="status">${r.state.toUpperCase()}</span>
+            <span class="status">${isOn ? 'ON' : 'OFF'}</span>
             <h3>${r.name}</h3>
             <p><strong>Slot:</strong> ${r.slot}</p>
             <p><strong>Task:</strong> ${r.id.slice(0, 12)}</p>
             <p><strong>Node:</strong> ${r.node_id.slice(0, 12)}</p>
           `;
+          el.addEventListener('click', () => {
+            const nowOn = !el.classList.contains('active');
+            el.classList.toggle('active', nowOn);
+            const badge = el.querySelector('.status');
+            if (badge) badge.textContent = nowOn ? 'ON' : 'OFF';
+            setTileToggle(r.id, nowOn);
+          });
           grid.appendChild(el);
         }
       } catch (e) {
