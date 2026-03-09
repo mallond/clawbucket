@@ -244,20 +244,41 @@ def set_rps_interval_seconds(value: int) -> int:
 
 
 def is_this_task_on_leader_manager() -> bool:
-    current_node_hostname = os.environ.get("SWARM_NODE") or ""
-    if not current_node_hostname:
+    # Match UI manager selection: exactly one publisher task.
+    current_task_id = os.environ.get("TASK_ID")
+    if not current_task_id:
         return False
 
     try:
         client = docker_client()
-        leader_hostname = None
+        leader_node_id = None
         for node in client.nodes.list():
             nattrs = node.attrs or {}
             mstatus = nattrs.get("ManagerStatus") or {}
             if mstatus.get("Leader") is True:
-                leader_hostname = (nattrs.get("Description") or {}).get("Hostname")
+                leader_node_id = nattrs.get("ID")
                 break
-        return bool(leader_hostname and leader_hostname == current_node_hostname)
+
+        service = client.services.get(SERVICE_NAME)
+        tasks = []
+        for task in service.tasks():
+            status = task.get("Status", {})
+            state = status.get("State", "unknown")
+            if state in {"running", "starting", "ready", "preparing"}:
+                tasks.append(task)
+
+        tasks.sort(key=lambda t: t.get("Slot", 10**9))
+
+        selected_task_id = None
+        if leader_node_id:
+            for t in tasks:
+                if t.get("NodeID") == leader_node_id:
+                    selected_task_id = t.get("ID")
+                    break
+        if selected_task_id is None and tasks:
+            selected_task_id = tasks[0].get("ID")
+
+        return bool(selected_task_id and selected_task_id == current_task_id)
     except Exception:
         return False
 
