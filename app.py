@@ -545,6 +545,7 @@ def index():
     .chip h3 { margin: 4px 0 8px; font-size: 1.02rem; }
     .chip p { margin: 4px 0; color: var(--muted); font-size: .9rem; }
     .status { display: inline-block; font-size: .78rem; font-weight: 700; letter-spacing: .02em; padding: 4px 8px; border-radius: 999px; background: #24314f; }
+    .status.on { background: #2d7c4a; }
     .arm-btn {
       margin-top: 8px;
       border: 1px solid #4d5f8e;
@@ -668,7 +669,10 @@ def index():
 
     function applyTileVisualState(tileEl, isOn) {
       const badge = tileEl.querySelector('.status');
-      if (badge) badge.textContent = isOn ? 'ON' : 'OFF';
+      if (badge) {
+        badge.textContent = isOn ? 'ON' : 'OFF';
+        badge.classList.toggle('on', isOn);
+      }
       const armBtn = tileEl.querySelector('.arm-btn');
       if (armBtn) {
         armBtn.classList.toggle('on', isOn);
