@@ -35,6 +35,7 @@ RPS_DEFAULT_INTERVAL_SECONDS = 10
 RPS_TTL_SECONDS = 20
 PLAYER_SCORE_PREFIX = "clawbucket:rps:score:"
 PLAYER_LAST_SEEN_PREFIX = "clawbucket:rps:last_seen:"
+MANAGER_OVERRIDE_SLOT_PREFIX = "clawbucket:manager:override:slot:"
 HAIKU_KEY = "clawbucket:haiku:latest"
 HAIKU_INTERVAL_SECONDS = 120
 HAIKU_TTL_SECONDS = 300
@@ -355,6 +356,45 @@ def save_task_three_words(task_id: str, text: str):
 
 def score_key(task_id: str) -> str:
     return f"{PLAYER_SCORE_PREFIX}{task_id}"
+
+
+def manager_override_slot_key(service_name: str) -> str:
+    return f"{MANAGER_OVERRIDE_SLOT_PREFIX}{service_name}"
+
+
+def get_manager_override_slot(service_name: str):
+    client = None
+    try:
+        client = memcache_client()
+        raw = client.get(manager_override_slot_key(service_name))
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        if raw is None:
+            return None
+        return int(raw)
+    except Exception:
+        return None
+    finally:
+        try:
+            if client:
+                client.close()
+        except Exception:
+            pass
+
+
+def set_manager_override_slot(service_name: str, slot: int, ttl_seconds: int = 300):
+    client = None
+    try:
+        client = memcache_client()
+        client.set(manager_override_slot_key(service_name), str(int(slot)), expire=max(10, int(ttl_seconds)))
+    except Exception:
+        pass
+    finally:
+        try:
+            if client:
+                client.close()
+        except Exception:
+            pass
 
 
 def last_seen_key(task_id: str) -> str:
@@ -806,10 +846,18 @@ def get_service_state(service_name: str):
 
     running.sort(key=lambda x: x["slot"])
 
-    # Mark exactly one manager tile, chosen by Swarm leader node and lowest slot.
+    # Mark exactly one manager tile. Prefer override slot (for outage drills),
+    # then fallback to Swarm leader-node placement and lowest slot.
     if running:
         manager_idx = None
-        if leader_node_id:
+        override_slot = get_manager_override_slot(service_name)
+        if override_slot is not None:
+            for i, r in enumerate(running):
+                if int(r.get("slot", -1)) == int(override_slot):
+                    manager_idx = i
+                    break
+
+        if manager_idx is None and leader_node_id:
             for i, r in enumerate(running):
                 if r["node_id"] == leader_node_id:
                     manager_idx = i
@@ -910,6 +958,76 @@ def api_arm_post():
     if not event:
         return jsonify({"error": "invalid payload or memcached unavailable"}), 400
     return jsonify({"ok": True, "event": event}), 201
+
+
+@app.post("/api/outage")
+def api_outage_post():
+    data = request.get_json(silent=True) or {}
+    service_name = (data.get("service") or "").strip()
+    task_id = (data.get("task_id") or "").strip()
+    if not service_name or not task_id:
+        return jsonify({"error": "service and task_id are required"}), 400
+
+    allowed = set(SWARM_SERVICES or [SERVICE_NAME])
+    if service_name not in allowed:
+        return jsonify({"error": f"service must be one of: {', '.join(sorted(allowed))}"}), 400
+
+    try:
+        client = docker_client()
+        service = client.services.get(service_name)
+        tasks = service.tasks()
+
+        target = None
+        running_rows = []
+        for t in tasks:
+            status = t.get("Status", {})
+            state = status.get("State", "")
+            if state in {"running", "starting", "ready", "preparing"}:
+                running_rows.append(t)
+            if t.get("ID") == task_id:
+                target = t
+
+        if not target:
+            return jsonify({"error": "task not found in service"}), 404
+
+        cstatus = (target.get("Status", {}) or {}).get("ContainerStatus", {}) or {}
+        container_id = cstatus.get("ContainerID")
+        if not container_id:
+            return jsonify({"error": "container id unavailable for task"}), 409
+
+        # Pick next manager candidate (next slot among currently running tasks).
+        next_slot = None
+        sorted_rows = sorted(running_rows, key=lambda x: x.get("Slot", 10**9))
+        for r in sorted_rows:
+            if r.get("ID") != task_id:
+                next_slot = r.get("Slot")
+                break
+        if next_slot is not None:
+            set_manager_override_slot(service_name, int(next_slot), ttl_seconds=300)
+
+        # Trigger outage by killing the manager task container; do it asynchronously
+        # so the API can return even if this task is killing itself.
+        def do_kill_later(cid: str):
+            try:
+                time.sleep(0.3)
+                cli = docker_client()
+                ctr = cli.containers.get(cid)
+                ctr.kill()
+            except Exception:
+                pass
+
+        Thread(target=do_kill_later, args=(container_id,), daemon=True).start()
+
+        return jsonify({
+            "ok": True,
+            "service": service_name,
+            "removed_task_id": task_id,
+            "next_manager_slot": next_slot,
+            "override_ttl_seconds": 300,
+            "status": "outage-triggered",
+        }), 202
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.get("/api/rps")
@@ -1152,6 +1270,25 @@ def index():
     }
 
     document.addEventListener('click', (event) => {
+      const outageBtn = event.target.closest('.outage-btn');
+      if (outageBtn) {
+        const tile = outageBtn.closest('.chip');
+        const panel = outageBtn.closest('.panel');
+        if (!tile || !panel) return;
+        const taskId = tile.dataset.taskId;
+        const serviceName = (panel.querySelector('strong')?.textContent || '').trim();
+        if (!taskId || !serviceName) return;
+        outageBtn.disabled = true;
+        fetch('/api/outage', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ service: serviceName, task_id: taskId }),
+        }).finally(() => {
+          setTimeout(loadState, 800);
+        });
+        return;
+      }
+
       const armBtn = event.target.closest('.arm-btn');
       if (!armBtn) return;
       const tile = armBtn.closest('.chip');
@@ -1250,6 +1387,7 @@ def index():
             <p><strong>Task:</strong> ${String(r.id || '').slice(0, 12)}</p>
             <p><strong>Node:</strong> ${String(r.node_id || '').slice(0, 12)}</p>
             <button type="button" class="arm-btn">Arm</button>
+            ${r.is_manager ? '<button type="button" class="outage-btn" style="margin-top:8px;margin-left:8px;border:1px solid #b24a4a;background:#4a1d1d;color:#fff;border-radius:8px;padding:6px 10px;font-weight:700;cursor:pointer;">Outage</button>' : ''}
             <div class="threewords">${r.three_words || ''}</div>
           `;
           applyTileVisualState(el, isOn);
