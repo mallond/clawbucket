@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from threading import Thread
 import time
 import random
+from urllib import request as urlrequest
 
 import docker
 from docker.errors import DockerException, NotFound
@@ -31,6 +32,12 @@ RPS_DEFAULT_INTERVAL_SECONDS = 10
 RPS_TTL_SECONDS = 20
 PLAYER_SCORE_PREFIX = "clawbucket:rps:score:"
 PLAYER_LAST_SEEN_PREFIX = "clawbucket:rps:last_seen:"
+HAIKU_KEY = "clawbucket:haiku:latest"
+HAIKU_INTERVAL_SECONDS = 120
+HAIKU_TTL_SECONDS = 300
+PICOCLAW_URL = os.environ.get("PICOCLAW_URL", "").strip()
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434/api/generate")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "smollm2:135m")
 
 
 def color_from_text(text: str) -> str:
@@ -431,10 +438,119 @@ def read_rps_state():
             pass
 
 
+def fetch_haiku_via_picoclaw():
+    if not PICOCLAW_URL:
+        return None
+    payload = {
+        "prompt": "Write exactly one short 3-line haiku about distributed systems.",
+        "max_tokens": 80,
+    }
+    req = urlrequest.Request(
+        PICOCLAW_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=8) as resp:
+            raw = resp.read().decode("utf-8")
+        data = json.loads(raw)
+        txt = (data.get("text") or data.get("response") or data.get("haiku") or "").strip()
+        return txt or None
+    except Exception:
+        return None
+
+
+def fetch_haiku_via_ollama():
+    payload = {
+        "model": OLLAMA_MODEL,
+        "prompt": "Write exactly one short 3-line haiku about distributed systems. Output only the poem.",
+        "stream": False,
+    }
+    req = urlrequest.Request(
+        OLLAMA_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=12) as resp:
+            raw = resp.read().decode("utf-8")
+        data = json.loads(raw)
+        txt = (data.get("response") or "").strip()
+        return txt or None
+    except Exception:
+        return None
+
+
+def save_latest_haiku(text: str, source: str):
+    text = (text or "").strip()
+    if not text:
+        return
+    rec = {
+        "text": text[:500],
+        "source": source,
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+    client = None
+    try:
+        client = memcache_client()
+        client.set(HAIKU_KEY, json.dumps(rec), expire=HAIKU_TTL_SECONDS)
+    except Exception:
+        pass
+    finally:
+        try:
+            if client:
+                client.close()
+        except Exception:
+            pass
+
+
+def load_latest_haiku():
+    client = None
+    try:
+        client = memcache_client()
+        raw = client.get(HAIKU_KEY)
+        if not raw:
+            return None
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+    finally:
+        try:
+            if client:
+                client.close()
+        except Exception:
+            pass
+
+
+def generate_haiku_once():
+    # Keep one publisher to avoid write races/spam.
+    if not is_this_task_on_leader_manager():
+        return
+
+    text = fetch_haiku_via_picoclaw()
+    source = "picoclaw"
+    if not text:
+        text = fetch_haiku_via_ollama()
+        source = "ollama"
+    if text:
+        save_latest_haiku(text, source)
+
+
 def rps_loop():
     while True:
         write_rps_state_once()
         time.sleep(get_rps_interval_seconds())
+
+
+def haiku_loop():
+    while True:
+        generate_haiku_once()
+        time.sleep(HAIKU_INTERVAL_SECONDS)
 
 
 def player_loop():
@@ -622,6 +738,14 @@ def api_rps_config_post():
     return jsonify({"ok": True, "interval_seconds": value})
 
 
+@app.get("/api/haiku")
+def api_haiku_get():
+    return jsonify({
+        "haiku": load_latest_haiku(),
+        "interval_seconds": HAIKU_INTERVAL_SECONDS,
+    })
+
+
 @app.get("/")
 def index():
     return """
@@ -755,6 +879,13 @@ def index():
 
     <div class=\"panel\" style=\"margin-top:16px\">
       <div class=\"row\">
+        <strong>Auto Haiku (every 2 minutes)</strong>
+      </div>
+      <div class=\"meta\" id=\"haikuBox\" style=\"margin-top:8px; font-size:.9rem; white-space:pre-line; line-height:1.35; max-height:72px; overflow:auto; border:1px solid #2b3a67; border-radius:8px; padding:8px;\">Waiting for first haiku...</div>
+    </div>
+
+    <div class=\"panel\" style=\"margin-top:16px\">
+      <div class=\"row\">
         <strong>Rock / Paper / Scissors Broadcast (Memcached)</strong>
       </div>
       <div class=\"row\" style=\"margin-top:10px\">
@@ -788,6 +919,7 @@ def index():
     const msg = document.getElementById('msg');
     const chatInput = document.getElementById('chatInput');
     const chatSend = document.getElementById('chatSend');
+    const haikuBox = document.getElementById('haikuBox');
     const chatMsg = document.getElementById('chatMsg');
     const chatFeed = document.getElementById('chatFeed');
     const rpsInterval = document.getElementById('rpsInterval');
@@ -938,6 +1070,20 @@ def index():
         sendChat();
       }
     });
+
+    async function loadHaiku() {
+      try {
+        const res = await fetch('/api/haiku');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Haiku unavailable');
+        const h = data.haiku;
+        haikuBox.textContent = h
+          ? `${h.text || ''}\n— ${h.source || 'unknown'} @ ${(h.at || '').replace('T', ' ').slice(0, 19)}Z`
+          : 'Waiting for first haiku...';
+      } catch {
+        // keep previous text
+      }
+    }
 
     async function loadRps() {
       try {
@@ -1104,9 +1250,11 @@ def index():
 
     loadState();
     loadChat();
+    loadHaiku();
     loadRps();
     setInterval(loadState, 3000);
     setInterval(loadChat, 4000);
+    setInterval(loadHaiku, 5000);
     setInterval(loadRps, 3000);
   </script>
 </body>
@@ -1117,5 +1265,6 @@ def index():
 if __name__ == "__main__":
     Thread(target=heartbeat_loop, daemon=True).start()
     Thread(target=rps_loop, daemon=True).start()
+    Thread(target=haiku_loop, daemon=True).start()
     Thread(target=player_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=8080)
