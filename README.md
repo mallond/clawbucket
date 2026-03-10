@@ -1,4 +1,5 @@
 # clawbucket
+<img width="1536" height="1024" alt="ChatGPT Image Mar 9, 2026, 01_47_20 PM" src="https://github.com/user-attachments/assets/879019f0-f51a-4e89-8e31-59749aaed52f" />
 
 **Bob's World** is now a Docker Swarm simulation platform for coordinating many AI-enabled replicas.
 
