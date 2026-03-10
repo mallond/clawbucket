@@ -2372,6 +2372,8 @@ def index():
           const pairBtnClass = `pair-btn ${isSelected ? 'selected' : ''} ${activePair ? 'paired' : ''}`.trim();
           const pairBtnText = activePair ? 'Paired' : (isSelected ? 'Selected' : 'Pair');
           const pairBtnDisabled = activePair ? 'disabled' : '';
+          const opponentId = activePair ? (activePair.task_a.task_id === r.id ? activePair.task_b.task_id : activePair.task_a.task_id) : null;
+          const matchupLine = activePair ? `<p><strong>Matchup:</strong> vs ${taskLabel(opponentId)}</p>` : '';
           el.innerHTML = `
             <span class="status">OFF</span>${r.is_manager ? '<span class="manager-badge">MANAGER</span>' : ''}
             <h3>${r.name}</h3>
@@ -2379,6 +2381,7 @@ def index():
             <p><strong>Slot:</strong> ${r.slot}</p>
             <p><strong>Task:</strong> ${String(r.id || '').slice(0, 12)}</p>
             <p><strong>Node:</strong> ${String(r.node_id || '').slice(0, 12)}</p>
+            ${matchupLine}
             <button type="button" class="arm-btn">Arm</button>
             <button type="button" class="${pairBtnClass}" ${pairBtnDisabled}>${pairBtnText}</button>
             ${r.is_manager ? '<button type="button" class="outage-btn" style="margin-top:8px;margin-left:8px;border:1px solid #b24a4a;background:#4a1d1d;color:#fff;border-radius:8px;padding:6px 10px;font-weight:700;cursor:pointer;">Outage</button>' : ''}
