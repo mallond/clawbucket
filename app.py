@@ -315,7 +315,7 @@ def load_task_three_words(task_id: str) -> str:
             raw = raw.decode("utf-8")
         data = json.loads(raw)
         if isinstance(data, dict):
-            return str(data.get("text") or "")[:64]
+            return str(data.get("text") or "")[:50]
     except Exception:
         pass
     finally:
@@ -332,7 +332,7 @@ def save_task_three_words(task_id: str, text: str):
     if not text:
         return
     rec = {
-        "text": text[:64],
+        "text": text[:50],
         "at": datetime.now(timezone.utc).isoformat(),
         "source": "picoclaw",
     }
