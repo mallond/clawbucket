@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from threading import Thread
 import time
 import random
+import re
 from urllib import request as urlrequest
 
 import docker
@@ -38,6 +39,9 @@ HAIKU_TTL_SECONDS = 300
 PICOCLAW_URL = os.environ.get("PICOCLAW_URL", "http://picoclaw:18790/v1/chat/completions").strip()
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434/api/generate")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "smollm2:135m")
+THREE_WORDS_PREFIX = "clawbucket:picoclaw:threewords:"
+THREE_WORDS_INTERVAL_SECONDS = 30
+THREE_WORDS_TTL_SECONDS = 120
 
 
 def color_from_text(text: str) -> str:
@@ -292,6 +296,56 @@ def is_this_task_on_leader_manager() -> bool:
 
 def task_id_for_keys() -> str:
     return os.environ.get("TASK_ID", "unknown")
+
+
+def three_words_key(task_id: str) -> str:
+    return f"{THREE_WORDS_PREFIX}{task_id}"
+
+
+def load_task_three_words(task_id: str) -> str:
+    client = None
+    try:
+        client = memcache_client()
+        raw = client.get(three_words_key(task_id))
+        if not raw:
+            return ""
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return str(data.get("text") or "")[:64]
+    except Exception:
+        pass
+    finally:
+        try:
+            if client:
+                client.close()
+        except Exception:
+            pass
+    return ""
+
+
+def save_task_three_words(task_id: str, text: str):
+    text = (text or "").strip()
+    if not text:
+        return
+    rec = {
+        "text": text[:64],
+        "at": datetime.now(timezone.utc).isoformat(),
+        "source": "picoclaw",
+    }
+    client = None
+    try:
+        client = memcache_client()
+        client.set(three_words_key(task_id), json.dumps(rec), expire=THREE_WORDS_TTL_SECONDS)
+    except Exception:
+        pass
+    finally:
+        try:
+            if client:
+                client.close()
+        except Exception:
+            pass
 
 
 def score_key(task_id: str) -> str:
@@ -554,6 +608,48 @@ def generate_haiku_once():
         save_latest_haiku(text, source)
 
 
+def strip_ansi(text: str) -> str:
+    return re.sub(r"\x1B\[[0-?]*[ -/]*[@-~]", "", text or "")
+
+
+def fetch_three_words_via_picoclaw_exec() -> str:
+    try:
+        client = docker_client()
+        cands = client.containers.list(filters={"label": "com.docker.swarm.service.name=clawbucket_picoclaw", "status": "running"})
+        if not cands:
+            return ""
+        picoclaw_ctr = cands[0]
+        cmd = ["picoclaw", "agent", "-m", "Reply with exactly three words, lowercase, no punctuation."]
+        code, out = picoclaw_ctr.exec_run(cmd, stdout=True, stderr=False)
+        if code != 0:
+            return ""
+        txt = strip_ansi(out.decode("utf-8", errors="ignore"))
+        lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
+        if not lines:
+            return ""
+        candidate = lines[-1].replace("🦞", "").strip()
+        candidate = re.sub(r"[^a-zA-Z\s-]", "", candidate).strip().lower()
+        words = [w for w in re.split(r"\s+", candidate) if w]
+        if len(words) >= 3:
+            return " ".join(words[:3])
+        return ""
+    except Exception:
+        return ""
+
+
+def three_words_loop():
+    while True:
+        try:
+            task_id = task_id_for_keys()
+            if task_id and task_id != "unknown":
+                text = fetch_three_words_via_picoclaw_exec()
+                if text:
+                    save_task_three_words(task_id, text)
+        except Exception:
+            pass
+        time.sleep(THREE_WORDS_INTERVAL_SECONDS)
+
+
 def rps_loop():
     while True:
         write_rps_state_once()
@@ -637,6 +733,7 @@ def get_service_state():
                     "color": color_from_text(task_id),
                     "is_manager": False,
                     "score": get_task_score(task_id),
+                    "three_words": load_task_three_words(task_id),
                 }
             )
 
@@ -868,6 +965,12 @@ def index():
     }
     .score.positive { color: #44d27a; }
     .score.negative { color: #ff6b6b; }
+    .threewords {
+      margin-top: 6px;
+      font-size: .82rem;
+      color: #9db0e3;
+      min-height: 1.1rem;
+    }
   </style>
 </head>
 <body>
@@ -1201,6 +1304,7 @@ def index():
             <p><strong>Task:</strong> ${r.id.slice(0, 12)}</p>
             <p><strong>Node:</strong> ${r.node_id.slice(0, 12)}</p>
             <button type="button" class="arm-btn">Arm</button>
+            <div class="threewords">${r.three_words || ''}</div>
           `;
           applyTileVisualState(el, isOn);
           grid.appendChild(el);
@@ -1279,5 +1383,6 @@ if __name__ == "__main__":
     Thread(target=heartbeat_loop, daemon=True).start()
     Thread(target=rps_loop, daemon=True).start()
     Thread(target=haiku_loop, daemon=True).start()
+    Thread(target=three_words_loop, daemon=True).start()
     Thread(target=player_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=8080)
