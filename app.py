@@ -49,6 +49,7 @@ DUEL_EVENTS_LIMIT = 120
 DUEL_INTERVAL_KEY = "clawbucket:duel:interval_seconds"
 DUEL_DEFAULT_INTERVAL_SECONDS = 15
 DUEL_REMOVE_CHANCE = 0.55
+CLAW_BATTLE_AUTO_ENABLED = os.environ.get("CLAW_BATTLE_AUTO_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
 CLAW_BATTLE_SCORE_KEY = "clawbucket:duel:battle:score"
 PLAYER_SCORE_PREFIX = "clawbucket:rps:score:"
 PLAYER_LAST_SEEN_PREFIX = "clawbucket:rps:last_seen:"
@@ -1255,7 +1256,7 @@ def duel_once():
 def duel_loop():
     while True:
         try:
-            if is_duel_game_master():
+            if CLAW_BATTLE_AUTO_ENABLED and is_duel_game_master():
                 duel_once()
         except Exception:
             pass
@@ -2286,7 +2287,8 @@ def index():
         const r = p.resolution || {};
         const when = String(p.resolved_at || p.created_at || '').slice(11, 19);
         const loser = (r.eliminated_task_ids || []).length ? ` | removed: ${(r.eliminated_task_ids || []).map(taskLabel).join(', ')}` : '';
-        row.textContent = `[${when}] ${p.game}: ${taskLabel(p.task_a.task_id)} vs ${taskLabel(p.task_b.task_id)} → ${r.reason || 'resolved'}${loser}`;
+        const winner = r.winner_task_id ? ` | winner: ${taskLabel(r.winner_task_id)}` : ' | winner: draw';
+        row.textContent = `[${when}] ${p.game}: ${taskLabel(p.task_a.task_id)} vs ${taskLabel(p.task_b.task_id)} → ${r.reason || 'resolved'}${winner}${loser}`;
         gameFeed.appendChild(row);
       }
       if (!rows.length) gameFeed.innerHTML = '<div class="meta">No resolved pair games yet.</div>';
