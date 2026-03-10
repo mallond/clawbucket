@@ -10,7 +10,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY --from=picoclaw_src /usr/local/bin/picoclaw /usr/local/bin/picoclaw
 COPY picoclaw.config.json /root/.picoclaw/config.json
 
-COPY app.py aggregator.py .
+COPY app.py aggregator.py game_engine.py .
 
 EXPOSE 8080
 EXPOSE 8090
