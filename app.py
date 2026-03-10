@@ -1847,7 +1847,7 @@ def index():
       cursor: pointer;
     }
     .pair-btn.selected { background: #5a2d8a; border-color: #9d69d8; }
-    .pair-btn.paired { background: #2f3d60; border-color: #6b7aa1; opacity: .8; }
+    .pair-btn.paired { background: #7a2323; border-color: #d65a5a; color: #ffe6e6; opacity: 1; }
     .lock-badge {
       display: inline-block;
       font-size: .72rem;
