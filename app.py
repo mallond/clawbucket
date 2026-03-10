@@ -38,6 +38,7 @@ HAIKU_KEY = "clawbucket:haiku:latest"
 HAIKU_INTERVAL_SECONDS = 120
 HAIKU_TTL_SECONDS = 300
 PICOCLAW_URL = os.environ.get("PICOCLAW_URL", "http://picoclaw:18790/v1/chat/completions").strip()
+PICOCLAW_ENABLED = os.environ.get("PICOCLAW_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434/api/generate")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "smollm2:135m")
 THREE_WORDS_PREFIX = "clawbucket:picoclaw:threewords:"
@@ -496,6 +497,8 @@ def read_rps_state():
 
 
 def fetch_haiku_via_picoclaw():
+    if not PICOCLAW_ENABLED:
+        return None
     prompt = "Write exactly one short 3-line haiku about distributed systems in a Starship Troopers military propaganda tone. Keep it punchy. Output only the poem."
     try:
         proc = subprocess.run(
@@ -605,6 +608,8 @@ def strip_ansi(text: str) -> str:
 
 
 def fetch_three_words_via_picoclaw_exec() -> str:
+    if not PICOCLAW_ENABLED:
+        return ""
     try:
         themes = [
             "distributed systems",

@@ -47,6 +47,7 @@ services:
       - MEMCACHED_HOST=clawbucket_memcached
       - MEMCACHED_PORT=11211
       - PICOCLAW_URL=
+      - PICOCLAW_ENABLED=0
       - OLLAMA_URL=http://ollama:11434/api/generate
       - OLLAMA_MODEL=smollm2:135m
     volumes:
