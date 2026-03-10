@@ -1804,6 +1804,39 @@ def index():
         <span class=\"meta\" id=\"gameMsg\"></span>
       </div>
       <div class=\"meta\" id=\"gameSelection\" style=\"margin-top:8px\">Select first task, then second task from the other swarm.</div>
+      <div class=\"row\" style=\"margin-top:10px\">
+        <label for=\"activePair\">Active pair:</label>
+        <select id=\"activePair\" style=\"min-width:320px\"></select>
+        <button id=\"pairResolve\">Resolve Now</button>
+      </div>
+      <div class=\"row\" style=\"margin-top:8px\">
+        <input id=\"pairChatInput\" type=\"text\" maxlength=\"300\" placeholder=\"Pair chat message...\" style=\"flex:1;min-width:240px\" />
+        <button id=\"pairChatSend\">Send Pair Chat</button>
+      </div>
+      <div class=\"meta\" id=\"pairChatMsg\" style=\"margin-top:8px\"></div>
+      <div class=\"row\" style=\"margin-top:8px\">
+        <label for=\"moveTask\">Move task:</label>
+        <select id=\"moveTask\"></select>
+        <span class=\"meta\" id=\"moveHint\"></span>
+      </div>
+      <div class=\"row\" style=\"margin-top:8px\" id=\"moveControlsPd\">
+        <label for=\"pdChoice\">PD:</label>
+        <select id=\"pdChoice\"><option value=\"cooperate\">cooperate</option><option value=\"betray\">betray</option></select>
+      </div>
+      <div class=\"row\" style=\"margin-top:8px\" id=\"moveControlsUlt\">
+        <label for=\"ultOffer\">Ultimatum offer:</label>
+        <input id=\"ultOffer\" type=\"number\" min=\"0\" max=\"100\" step=\"1\" value=\"5\" style=\"width:90px\" />
+        <label for=\"ultAccept\">Accept:</label>
+        <select id=\"ultAccept\"><option value=\"true\">true</option><option value=\"false\">false</option></select>
+      </div>
+      <div class=\"row\" style=\"margin-top:8px\" id=\"moveControlsContract\">
+        <label for=\"contractChoice\">Contract choice:</label>
+        <input id=\"contractChoice\" type=\"text\" maxlength=\"40\" value=\"blue\" style=\"width:140px\" />
+      </div>
+      <div class=\"row\" style=\"margin-top:8px\">
+        <button id=\"moveSubmit\">Submit Move</button>
+        <span class=\"meta\" id=\"moveMsg\"></span>
+      </div>
       <div id=\"gameFeed\" style=\"margin-top:10px; display:grid; gap:6px; max-height:180px; overflow:auto;\"></div>
     </div>
 
@@ -1842,6 +1875,22 @@ def index():
     const gameMsg = document.getElementById('gameMsg');
     const gameSelection = document.getElementById('gameSelection');
     const gameFeed = document.getElementById('gameFeed');
+    const activePair = document.getElementById('activePair');
+    const pairResolve = document.getElementById('pairResolve');
+    const pairChatInput = document.getElementById('pairChatInput');
+    const pairChatSend = document.getElementById('pairChatSend');
+    const pairChatMsg = document.getElementById('pairChatMsg');
+    const moveTask = document.getElementById('moveTask');
+    const moveHint = document.getElementById('moveHint');
+    const moveControlsPd = document.getElementById('moveControlsPd');
+    const moveControlsUlt = document.getElementById('moveControlsUlt');
+    const moveControlsContract = document.getElementById('moveControlsContract');
+    const pdChoice = document.getElementById('pdChoice');
+    const ultOffer = document.getElementById('ultOffer');
+    const ultAccept = document.getElementById('ultAccept');
+    const contractChoice = document.getElementById('contractChoice');
+    const moveSubmit = document.getElementById('moveSubmit');
+    const moveMsg = document.getElementById('moveMsg');
     const TILE_TOGGLE_KEY = 'clawbucket.tileToggles';
     const pendingTargets = {};
     let selectedPairTask = null;
@@ -1989,6 +2038,65 @@ def index():
         m[p.task_b.task_id] = p;
       }
       return m;
+    }
+
+    function selectedPairObj() {
+      const id = activePair.value;
+      return (gameState.active_pairs || []).find(p => p.pair_id === id) || null;
+    }
+
+    function renderMoveControls() {
+      const p = selectedPairObj();
+      const game = p?.game;
+      moveControlsPd.style.display = game === 'prisoners_dilemma' ? 'flex' : 'none';
+      moveControlsUlt.style.display = game === 'ultimatum' ? 'flex' : 'none';
+      moveControlsContract.style.display = game === 'contract' ? 'flex' : 'none';
+
+      if (!p) {
+        moveHint.textContent = 'No active pair selected.';
+        return;
+      }
+      const taskId = moveTask.value;
+      if (game === 'ultimatum') {
+        const proposer = p.proposer_task_id || p.task_a.task_id;
+        moveHint.textContent = taskId === proposer ? 'Submitting proposer offer_to_other' : 'Submitting responder accept boolean';
+      } else if (game === 'prisoners_dilemma') {
+        moveHint.textContent = 'Submitting choice: cooperate or betray';
+      } else {
+        moveHint.textContent = 'Submitting contract choice text';
+      }
+    }
+
+    function renderActivePairControls() {
+      const current = activePair.value;
+      const pairs = gameState.active_pairs || [];
+      activePair.innerHTML = '';
+      for (const p of pairs) {
+        const opt = document.createElement('option');
+        opt.value = p.pair_id;
+        opt.textContent = `${p.pair_id} | ${p.game} | ${taskLabel(p.task_a.task_id)} ↔ ${taskLabel(p.task_b.task_id)}`;
+        activePair.appendChild(opt);
+      }
+      if (!pairs.length) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = 'No active pairs';
+        activePair.appendChild(opt);
+      } else if (pairs.some(p => p.pair_id === current)) {
+        activePair.value = current;
+      }
+
+      const p = selectedPairObj();
+      moveTask.innerHTML = '';
+      if (p) {
+        [p.task_a.task_id, p.task_b.task_id].forEach(tid => {
+          const opt = document.createElement('option');
+          opt.value = tid;
+          opt.textContent = taskLabel(tid);
+          moveTask.appendChild(opt);
+        });
+      }
+      renderMoveControls();
     }
 
     function renderGameFeed() {
@@ -2305,6 +2413,7 @@ def index():
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Game unavailable');
         gameState = data || { active_pairs: [], resolved_pairs: [], alive_tasks: [] };
+        renderActivePairControls();
         renderGameFeed();
       } catch (e) {
         gameMsg.textContent = e.message;
@@ -2316,6 +2425,118 @@ def index():
       gameMsg.textContent = 'Selection cleared.';
       gameSelection.textContent = 'Select first task, then second task from the other swarm.';
       renderSwarms(window.__lastSwarms || []);
+    });
+
+    activePair.addEventListener('change', () => {
+      renderActivePairControls();
+    });
+
+    moveTask.addEventListener('change', () => {
+      renderMoveControls();
+    });
+
+    pairChatInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        pairChatSend.click();
+      }
+    });
+
+    pairChatSend.addEventListener('click', async () => {
+      const p = selectedPairObj();
+      const text = (pairChatInput.value || '').trim();
+      const fromTask = moveTask.value;
+      if (!p) { pairChatMsg.textContent = 'No active pair selected.'; return; }
+      if (!text) { pairChatMsg.textContent = 'Enter a chat message first.'; return; }
+      if (!fromTask) { pairChatMsg.textContent = 'Select move task to send as.'; return; }
+      pairChatSend.disabled = true;
+      pairChatMsg.textContent = 'Sending pair chat...';
+      try {
+        const res = await fetch('/api/game/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pair_id: p.pair_id, from_task: fromTask, text }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Pair chat failed');
+        pairChatInput.value = '';
+        pairChatMsg.textContent = 'Pair chat sent.';
+        await loadGame();
+      } catch (e) {
+        pairChatMsg.textContent = e.message;
+      } finally {
+        pairChatSend.disabled = false;
+      }
+    });
+
+    moveSubmit.addEventListener('click', async () => {
+      const p = selectedPairObj();
+      const taskId = moveTask.value;
+      if (!p) { moveMsg.textContent = 'No active pair selected.'; return; }
+      if (!taskId) { moveMsg.textContent = 'Select a task first.'; return; }
+
+      let move = {};
+      if (p.game === 'prisoners_dilemma') {
+        move = { choice: pdChoice.value };
+      } else if (p.game === 'ultimatum') {
+        const proposer = p.proposer_task_id || p.task_a.task_id;
+        if (taskId === proposer) {
+          const offer = parseInt(ultOffer.value, 10);
+          if (!Number.isInteger(offer) || offer < 0) {
+            moveMsg.textContent = 'Offer must be a non-negative integer.';
+            return;
+          }
+          move = { offer_to_other: offer };
+        } else {
+          move = { accept: ultAccept.value === 'true' };
+        }
+      } else {
+        const choice = (contractChoice.value || '').trim();
+        if (!choice) { moveMsg.textContent = 'Contract choice cannot be empty.'; return; }
+        move = { choice };
+      }
+
+      moveSubmit.disabled = true;
+      moveMsg.textContent = 'Submitting move...';
+      try {
+        const res = await fetch('/api/game/move', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pair_id: p.pair_id, task: taskId, move }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Move submit failed');
+        moveMsg.textContent = data.status === 'resolved' ? `Resolved: ${data.resolution?.reason || 'done'}` : 'Move submitted.';
+        await loadGame();
+        await loadState();
+      } catch (e) {
+        moveMsg.textContent = e.message;
+      } finally {
+        moveSubmit.disabled = false;
+      }
+    });
+
+    pairResolve.addEventListener('click', async () => {
+      const p = selectedPairObj();
+      if (!p) { moveMsg.textContent = 'No active pair selected.'; return; }
+      pairResolve.disabled = true;
+      moveMsg.textContent = 'Resolving...';
+      try {
+        const res = await fetch('/api/game/resolve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pair_id: p.pair_id }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Resolve failed');
+        moveMsg.textContent = `Resolved: ${data.pair?.resolution?.reason || 'done'}`;
+        await loadGame();
+        await loadState();
+      } catch (e) {
+        moveMsg.textContent = e.message;
+      } finally {
+        pairResolve.disabled = false;
+      }
     });
 
     gameMode.addEventListener('change', () => {
