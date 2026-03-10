@@ -1749,6 +1749,28 @@ def index():
     }
     .pair-btn.selected { background: #5a2d8a; border-color: #9d69d8; }
     .pair-btn.paired { background: #2f3d60; border-color: #6b7aa1; opacity: .8; }
+    .lock-badge {
+      display: inline-block;
+      font-size: .72rem;
+      font-weight: 800;
+      border-radius: 999px;
+      padding: 3px 8px;
+      border: 1px solid #50618f;
+      background: #24314f;
+      color: #dce6ff;
+      margin-right: 6px;
+    }
+    .lock-badge.locked {
+      background: #1f5e3b;
+      border-color: #3fb96d;
+      color: #d6ffe8;
+    }
+    .pair-card {
+      border: 1px solid #2b3a67;
+      border-radius: 10px;
+      padding: 8px;
+      background: #0f1730;
+    }
   </style>
 </head>
 <body>
@@ -1809,11 +1831,16 @@ def index():
         <select id=\"activePair\" style=\"min-width:320px\"></select>
         <button id=\"pairResolve\">Resolve Now</button>
       </div>
+      <div class=\"pair-card\" style=\"margin-top:8px\">
+        <div class=\"row\" id=\"pairStatusRow\"></div>
+        <div class=\"meta\" id=\"pairDeadline\" style=\"margin-top:6px\"></div>
+      </div>
       <div class=\"row\" style=\"margin-top:8px\">
         <input id=\"pairChatInput\" type=\"text\" maxlength=\"300\" placeholder=\"Pair chat message...\" style=\"flex:1;min-width:240px\" />
         <button id=\"pairChatSend\">Send Pair Chat</button>
       </div>
       <div class=\"meta\" id=\"pairChatMsg\" style=\"margin-top:8px\"></div>
+      <div id=\"pairChatFeed\" style=\"margin-top:8px; display:grid; gap:6px; max-height:120px; overflow:auto;\"></div>
       <div class=\"row\" style=\"margin-top:8px\">
         <label for=\"moveTask\">Move task:</label>
         <select id=\"moveTask\"></select>
@@ -1880,6 +1907,9 @@ def index():
     const pairChatInput = document.getElementById('pairChatInput');
     const pairChatSend = document.getElementById('pairChatSend');
     const pairChatMsg = document.getElementById('pairChatMsg');
+    const pairStatusRow = document.getElementById('pairStatusRow');
+    const pairDeadline = document.getElementById('pairDeadline');
+    const pairChatFeed = document.getElementById('pairChatFeed');
     const moveTask = document.getElementById('moveTask');
     const moveHint = document.getElementById('moveHint');
     const moveControlsPd = document.getElementById('moveControlsPd');
@@ -2045,6 +2075,49 @@ def index():
       return (gameState.active_pairs || []).find(p => p.pair_id === id) || null;
     }
 
+    function secondsRemaining(deadlineIso) {
+      if (!deadlineIso) return null;
+      const ms = new Date(deadlineIso).getTime() - Date.now();
+      return Math.max(0, Math.floor(ms / 1000));
+    }
+
+    function renderPairVisualStatus() {
+      const p = selectedPairObj();
+      pairStatusRow.innerHTML = '';
+      if (!p) {
+        pairDeadline.textContent = 'No active pair selected.';
+        pairChatFeed.innerHTML = '<div class="meta">No pair chat yet.</div>';
+        return;
+      }
+
+      const locked = p.moves || {};
+      const tasks = [p.task_a.task_id, p.task_b.task_id];
+      for (const tid of tasks) {
+        const badge = document.createElement('span');
+        const isLocked = !!locked[tid];
+        badge.className = `lock-badge ${isLocked ? 'locked' : ''}`;
+        badge.textContent = `${isLocked ? 'LOCKED' : 'WAITING'} · ${taskLabel(tid)}`;
+        pairStatusRow.appendChild(badge);
+      }
+
+      const left = secondsRemaining(p.negotiation_deadline);
+      pairDeadline.textContent = `Game: ${p.game} | Status: ${p.status} | Deadline in ${left ?? '-'}s`;
+
+      const msgs = (p.chat || []).slice(-6).reverse();
+      pairChatFeed.innerHTML = '';
+      for (const m of msgs) {
+        const row = document.createElement('div');
+        row.className = 'meta';
+        row.style.padding = '6px 8px';
+        row.style.border = '1px solid #2b3a67';
+        row.style.borderRadius = '8px';
+        row.style.background = '#0f1730';
+        row.textContent = `[${String(m.at || '').slice(11,19)}] ${taskLabel(m.from_task)}: ${m.text || ''}`;
+        pairChatFeed.appendChild(row);
+      }
+      if (!msgs.length) pairChatFeed.innerHTML = '<div class="meta">No pair chat yet.</div>';
+    }
+
     function renderMoveControls() {
       const p = selectedPairObj();
       const game = p?.game;
@@ -2097,6 +2170,7 @@ def index():
         });
       }
       renderMoveControls();
+      renderPairVisualStatus();
     }
 
     function renderGameFeed() {
