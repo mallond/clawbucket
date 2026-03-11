@@ -1681,6 +1681,15 @@ def api_revolt_post():
         current = int((service.attrs.get("Spec", {}).get("Mode", {}).get("Replicated", {}) or {}).get("Replicas", 0) or 0)
         if current <= 1:
             return jsonify({"error": "cannot revolt when source service has only 1 replica"}), 409
+
+        # Remove the specific revolting source task, then lower desired count by 1.
+        # This keeps the UI/ops semantics aligned: selected task defects and disappears.
+        source_cid = row.get("container_id")
+        if source_cid:
+            try:
+                client.containers.get(source_cid).kill()
+            except Exception:
+                pass
         service.scale(current - 1)
 
         append_revolt_event({
@@ -2726,6 +2735,8 @@ def index():
 
         const sortedReplicas = [...(s.replicas || [])].sort((a,b)=> (b.score||0)-(a.score||0) || (a.slot||0)-(b.slot||0));
         for (const r of sortedReplicas) {
+          // Hide source task tile after revolt so it is treated as removed.
+          if (revoltFromMap[r.id]) continue;
           const el = document.createElement('div');
           const isOn = toggles[r.id] === true;
           el.className = `chip ${r.is_manager ? 'manager' : ''}`;
