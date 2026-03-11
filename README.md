@@ -3,6 +3,11 @@
 
 **Bob's World** is now a Docker Swarm simulation platform for coordinating many AI-enabled replicas.
 
+> [!IMPORTANT]
+> ## PRIME DIRECTIVE
+> **This is an experimental build.** For operational steps, commands, and troubleshooting workflow, **ask OpenClaw / GPT-5.x for instructions first**.
+> Try it — the agent works like having a **Human DevOps** partner on demand.
+
 ## Highlights (current)
 
 - Swarm replica tiles with per-tile ARM state
