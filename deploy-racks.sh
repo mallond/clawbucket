@@ -40,6 +40,7 @@ deploy_stack() {
   local rack="$1"
   local stack="$2"
   local bot_label="$3"
+  local peer_url="$4"
 
   # Clean up old rack-specific stacks from earlier iterations.
   docker exec "$rack" docker stack rm clawbucket_rack1 >/dev/null 2>&1 || true
@@ -49,7 +50,7 @@ deploy_stack() {
   docker exec "$rack" docker build -t "$IMAGE" /workspace/clawbucket >/dev/null
 
   echo "[${rack}] deploying stack ${stack} (${bot_label})"
-  docker exec "$rack" sh -lc "DASHBOARD_BOT_LABEL='${bot_label}' docker stack deploy -c '$STACK_FILE' '$stack'"
+  docker exec "$rack" sh -lc "DASHBOARD_BOT_LABEL='${bot_label}' PEER_DASHBOARD_URL='${peer_url}' docker stack deploy -c '$STACK_FILE' '$stack'"
 }
 
 status() {
@@ -70,8 +71,8 @@ for rack in rack-1-dind rack-2-dind; do
 done
 
 # Use the original stack name inside each isolated rack so service env names resolve.
-deploy_stack rack-1-dind clawbucket "Machine Rack 1"
-deploy_stack rack-2-dind clawbucket "Machine Rack 2"
+deploy_stack rack-1-dind clawbucket "Machine Rack 1" "http://host.docker.internal:28080"
+deploy_stack rack-2-dind clawbucket "Machine Rack 2" "http://host.docker.internal:18080"
 
 status rack-1-dind
 status rack-2-dind

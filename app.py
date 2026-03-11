@@ -62,6 +62,7 @@ PICOCLAW_ENABLED = os.environ.get("PICOCLAW_ENABLED", "1").strip().lower() not i
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434/api/generate")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "smollm2:135m")
 DASHBOARD_BOT_LABEL = os.environ.get("DASHBOARD_BOT_LABEL", "").strip()
+PEER_DASHBOARD_URL = os.environ.get("PEER_DASHBOARD_URL", "").strip().rstrip("/")
 THREE_WORDS_PREFIX = "clawbucket:picoclaw:threewords:"
 THREE_WORDS_SHARED_KEY = "clawbucket:picoclaw:threewords:latest"
 THREE_WORDS_INTERVAL_SECONDS = 30
@@ -1171,6 +1172,43 @@ def list_running_task_rows(service_name: str):
     return rows
 
 
+def task_arm_state(task_id: str) -> str:
+    for ev in reversed(load_arm_events()):
+        if ev.get("task_id") == task_id:
+            return "on" if str(ev.get("state", "")).lower() == "on" else "off"
+    return "off"
+
+
+def snapshot_task_state(task_id: str) -> dict:
+    return {
+        "score": get_task_score(task_id),
+        "three_words": load_task_three_words(task_id),
+        "arm_state": task_arm_state(task_id),
+    }
+
+
+def apply_task_state(task_id: str, state: dict):
+    if not isinstance(state, dict):
+        return
+    try:
+        set_task_score(task_id, int(state.get("score", 0)))
+    except Exception:
+        pass
+    three = str(state.get("three_words") or "").strip()
+    if three:
+        save_task_three_words(task_id, three)
+    arm_state = "on" if str(state.get("arm_state", "")).lower() == "on" else "off"
+    append_arm_event(task_id, generated_name(task_id), arm_state)
+
+
+def http_post_json(url: str, payload: dict, timeout: float = 8.0):
+    body = json.dumps(payload).encode("utf-8")
+    req = urlrequest.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
+    with urlrequest.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read().decode("utf-8") if resp else "{}"
+        return json.loads(raw) if raw else {}
+
+
 def is_duel_game_master() -> bool:
     primary = (SWARM_SERVICES[0] if SWARM_SERVICES else SERVICE_NAME)
     return os.environ.get("SWARM_SERVICE", "") == primary and is_this_task_on_leader_manager()
@@ -1446,6 +1484,105 @@ def api_outage_post():
             "next_manager_slot": next_slot,
             "override_ttl_seconds": 300,
             "status": "outage-triggered",
+        }), 202
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.post("/api/revolt/accept")
+def api_revolt_accept_post():
+    data = request.get_json(silent=True) or {}
+    service_name = (data.get("service") or "").strip()
+    state = data.get("state") or {}
+    source_task_id = (data.get("source_task_id") or "").strip()
+
+    allowed = set(SWARM_SERVICES or [SERVICE_NAME])
+    if service_name not in allowed:
+        return jsonify({"error": f"service must be one of: {', '.join(sorted(allowed))}"}), 400
+
+    try:
+        client = docker_client()
+        service = client.services.get(service_name)
+        before_rows = list_running_task_rows(service_name)
+        before_ids = {r.get("id") for r in before_rows if r.get("id")}
+        current = int((service.attrs.get("Spec", {}).get("Mode", {}).get("Replicated", {}) or {}).get("Replicas", len(before_rows)) or len(before_rows))
+        target = max(1, current + 1)
+        service.scale(target)
+
+        new_task_id = None
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            rows = list_running_task_rows(service_name)
+            for r in rows:
+                tid = r.get("id")
+                if tid and tid not in before_ids:
+                    new_task_id = tid
+                    break
+            if new_task_id:
+                break
+            time.sleep(0.4)
+
+        if not new_task_id:
+            return jsonify({"error": "timed out waiting for new target task"}), 504
+
+        apply_task_state(new_task_id, state)
+        return jsonify({
+            "ok": True,
+            "service": service_name,
+            "target_task_id": new_task_id,
+            "from_task_id": source_task_id,
+            "status": "accepted",
+        }), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.post("/api/revolt")
+def api_revolt_post():
+    data = request.get_json(silent=True) or {}
+    service_name = (data.get("service") or "").strip()
+    task_id = (data.get("task_id") or "").strip()
+    if not service_name or not task_id:
+        return jsonify({"error": "service and task_id are required"}), 400
+
+    if not PEER_DASHBOARD_URL:
+        return jsonify({"error": "peer dashboard is not configured for revolt"}), 409
+
+    allowed = set(SWARM_SERVICES or [SERVICE_NAME])
+    if service_name not in allowed:
+        return jsonify({"error": f"service must be one of: {', '.join(sorted(allowed))}"}), 400
+
+    try:
+        row = next((r for r in list_running_task_rows(service_name) if r.get("id") == task_id), None)
+        if not row:
+            return jsonify({"error": "task not found in service"}), 404
+
+        state = snapshot_task_state(task_id)
+        peer_payload = {
+            "service": service_name,
+            "source_task_id": task_id,
+            "state": state,
+            "from_rack": DASHBOARD_BOT_LABEL,
+        }
+        peer_resp = http_post_json(f"{PEER_DASHBOARD_URL}/api/revolt/accept", peer_payload, timeout=10.0)
+        if not isinstance(peer_resp, dict) or not peer_resp.get("ok"):
+            return jsonify({"error": "peer rack rejected revolt", "peer": peer_resp}), 502
+
+        client = docker_client()
+        service = client.services.get(service_name)
+        current = int((service.attrs.get("Spec", {}).get("Mode", {}).get("Replicated", {}) or {}).get("Replicas", 0) or 0)
+        if current <= 1:
+            return jsonify({"error": "cannot revolt when source service has only 1 replica"}), 409
+        service.scale(current - 1)
+
+        return jsonify({
+            "ok": True,
+            "service": service_name,
+            "source_task_id": task_id,
+            "target_task_id": peer_resp.get("target_task_id"),
+            "peer": PEER_DASHBOARD_URL,
+            "source_desired_replicas": current - 1,
+            "status": "revolted",
         }), 202
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -2206,6 +2343,32 @@ def index():
         return;
       }
 
+      const revoltBtn = event.target.closest('.revolt-btn');
+      if (revoltBtn) {
+        const tile = revoltBtn.closest('.chip');
+        if (!tile) return;
+        const taskId = tile.dataset.taskId;
+        const serviceName = tile.dataset.service;
+        if (!taskId || !serviceName) return;
+        if (!confirm(`Revolt ${taskId.slice(0,12)} to the other rack?`)) return;
+        revoltBtn.disabled = true;
+        try {
+          const res = await fetch('/api/revolt', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ service: serviceName, task_id: taskId }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Revolt failed');
+          setTimeout(loadState, 1200);
+        } catch (e) {
+          alert(`Revolt failed: ${e.message}`);
+        } finally {
+          revoltBtn.disabled = false;
+        }
+        return;
+      }
+
       const armBtn = event.target.closest('.arm-btn');
       if (!armBtn) return;
       const tile = armBtn.closest('.chip');
@@ -2455,6 +2618,7 @@ def index():
             ${matchupLine}
             <button type="button" class="arm-btn">Arm</button>
             <button type="button" class="${pairBtnClass}" ${pairBtnDisabled}>${pairBtnText}</button>
+            <button type="button" class="revolt-btn" style="margin-top:8px;margin-left:8px;border:1px solid #c98b2f;background:#6b4a1a;color:#fff;border-radius:8px;padding:6px 10px;font-weight:700;cursor:pointer;">Revolt</button>
             <button type="button" class="selfdestruct-btn" style="margin-top:8px;margin-left:8px;border:1px solid #d65a5a;background:#7a2323;color:#fff;border-radius:8px;padding:6px 10px;font-weight:700;cursor:pointer;">Self-Destruct</button>
             ${r.is_manager ? '<button type="button" class="outage-btn" style="margin-top:8px;margin-left:8px;border:1px solid #b24a4a;background:#4a1d1d;color:#fff;border-radius:8px;padding:6px 10px;font-weight:700;cursor:pointer;">Outage</button>' : ''}
             <div class="threewords">${r.three_words || ''}</div>

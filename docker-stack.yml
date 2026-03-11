@@ -52,6 +52,7 @@ services:
       - OLLAMA_URL=http://ollama:11434/api/generate
       - OLLAMA_MODEL=smollm2:135m
       - DASHBOARD_BOT_LABEL=${DASHBOARD_BOT_LABEL:-BOT}
+      - PEER_DASHBOARD_URL=${PEER_DASHBOARD_URL:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     deploy:
