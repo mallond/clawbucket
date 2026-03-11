@@ -39,6 +39,8 @@ CHAT_KEY = "clawbucket:chat:messages"
 CHAT_LIMIT = 40
 ARM_EVENTS_KEY = "clawbucket:arm:events"
 ARM_EVENTS_LIMIT = 500
+REVOLT_EVENTS_KEY = "clawbucket:revolt:events"
+REVOLT_EVENTS_LIMIT = 300
 HEARTBEAT_INTERVAL_SECONDS = 10
 HEARTBEAT_TTL_SECONDS = 20
 RPS_STATE_KEY = "clawbucket:rps:state"
@@ -213,6 +215,50 @@ def append_arm_event(task_id: str, bot_name: str, state: str):
         except Exception:
             pass
 
+    return event
+
+
+def load_revolt_events():
+    client = None
+    try:
+        client = memcache_client()
+        raw = client.get(REVOLT_EVENTS_KEY)
+        if not raw:
+            return []
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        data = json.loads(raw)
+        if isinstance(data, list):
+            return data[-REVOLT_EVENTS_LIMIT:]
+    except Exception:
+        pass
+    finally:
+        try:
+            if client:
+                client.close()
+        except Exception:
+            pass
+    return []
+
+
+def append_revolt_event(event: dict):
+    if not isinstance(event, dict):
+        return None
+    events = load_revolt_events()
+    events.append(event)
+    events = events[-REVOLT_EVENTS_LIMIT:]
+    client = None
+    try:
+        client = memcache_client()
+        client.set(REVOLT_EVENTS_KEY, json.dumps(events), expire=86400)
+    except Exception:
+        return None
+    finally:
+        try:
+            if client:
+                client.close()
+        except Exception:
+            pass
     return event
 
 
@@ -1410,6 +1456,11 @@ def api_arm_post():
     return jsonify({"ok": True, "event": event}), 201
 
 
+@app.get("/api/revolt/events")
+def api_revolt_events_get():
+    return jsonify({"events": load_revolt_events(), "source": "memcached"})
+
+
 @app.post("/api/self_destruct")
 def api_self_destruct_post():
     data = request.get_json(silent=True) or {}
@@ -1559,13 +1610,25 @@ def api_revolt_accept_post():
         snap_path = save_revolt_snapshot(snap)
         restored = load_revolt_snapshot(snap_path).get("state", {})
         apply_task_state(new_task_id, restored)
+        ev = {
+            "id": hashlib.md5(f"revolt:{time.time()}:{source_task_id}:{new_task_id}".encode("utf-8")).hexdigest()[:12],
+            "at": datetime.now(timezone.utc).isoformat(),
+            "source_task_id": source_task_id,
+            "target_task_id": new_task_id,
+            "service": service_name,
+            "source_rack": str(data.get("from_rack") or "unknown"),
+            "target_rack": DASHBOARD_BOT_LABEL or "unknown",
+            "snapshot_id": (load_revolt_snapshot(snap_path).get("snapshot_id") or snapshot_id),
+        }
+        append_revolt_event(ev)
         return jsonify({
             "ok": True,
             "service": service_name,
             "target_task_id": new_task_id,
             "from_task_id": source_task_id,
-            "snapshot_id": (load_revolt_snapshot(snap_path).get("snapshot_id") or snapshot_id),
+            "snapshot_id": ev["snapshot_id"],
             "snapshot_path": snap_path,
+            "event": ev,
             "status": "accepted",
         }), 201
     except Exception as e:
@@ -1619,6 +1682,17 @@ def api_revolt_post():
         if current <= 1:
             return jsonify({"error": "cannot revolt when source service has only 1 replica"}), 409
         service.scale(current - 1)
+
+        append_revolt_event({
+            "id": hashlib.md5(f"revolt-src:{time.time()}:{task_id}:{peer_resp.get('target_task_id','')}".encode("utf-8")).hexdigest()[:12],
+            "at": datetime.now(timezone.utc).isoformat(),
+            "source_task_id": task_id,
+            "target_task_id": peer_resp.get("target_task_id"),
+            "service": service_name,
+            "source_rack": DASHBOARD_BOT_LABEL or "unknown",
+            "target_rack": "peer",
+            "snapshot_id": local_snapshot.get("snapshot_id"),
+        })
 
         return jsonify({
             "ok": True,
@@ -2201,6 +2275,11 @@ def index():
     </div>
 
     <div class=\"panel\" style=\"margin-top:16px\">
+      <div class=\"row\"><strong>Revolt Activity</strong></div>
+      <div id=\"revoltFeed\" style=\"margin-top:10px; display:grid; gap:6px; max-height:140px; overflow:auto;\"></div>
+    </div>
+
+    <div class=\"panel\" style=\"margin-top:16px\">
       <div class=\"row\">
         <strong>Container Conversation (Memcached simulation)</strong>
       </div>
@@ -2220,6 +2299,7 @@ def index():
     const haikuBox = document.getElementById('haikuBox');
     const chatMsg = document.getElementById('chatMsg');
     const chatFeed = document.getElementById('chatFeed');
+    const revoltFeed = document.getElementById('revoltFeed');
     const rpsInterval = document.getElementById('rpsInterval');
     const rpsApply = document.getElementById('rpsApply');
     const rpsMsg = document.getElementById('rpsMsg');
@@ -2409,6 +2489,7 @@ def index():
           const data = await res.json();
           if (!res.ok) throw new Error(data.error || 'Revolt failed');
           setTimeout(loadState, 1200);
+          setTimeout(loadRevolt, 1200);
         } catch (e) {
           alert(`Revolt failed: ${e.message}`);
         } finally {
@@ -2605,6 +2686,13 @@ def index():
     function renderSwarms(swarms) {
       const toggles = loadTileToggles();
       const pMap = pairMap();
+      const revoltEvents = (window.__revoltEvents || []).slice(-80);
+      const revoltToMap = {};
+      const revoltFromMap = {};
+      for (const ev of revoltEvents) {
+        if (ev.target_task_id) revoltToMap[ev.target_task_id] = ev;
+        if (ev.source_task_id) revoltFromMap[ev.source_task_id] = ev;
+      }
       swarmPanels.innerHTML = '';
       for (const s of swarms || []) {
         const panel = document.createElement('div');
@@ -2656,8 +2744,13 @@ def index():
           const matchupLine = activePair
             ? `<p><strong>Matchup:</strong> vs ${taskLabel(opponentId)}</p>`
             : `<p><strong>Matchup:</strong> none</p>`;
+          const revoltIn = revoltToMap[r.id];
+          const revoltOut = revoltFromMap[r.id];
+          const revoltBadge = revoltIn
+            ? `<span class="lock-badge locked">FROM ${String(revoltIn.source_task_id || '').slice(0, 8)}</span>`
+            : (revoltOut ? `<span class="lock-badge">DEFECTED</span>` : '');
           el.innerHTML = `
-            <span class="status">OFF</span>${r.is_manager ? '<span class="manager-badge">MANAGER</span>' : ''}
+            <span class="status">OFF</span>${r.is_manager ? '<span class="manager-badge">MANAGER</span>' : ''}${revoltBadge}
             <h3>${r.name}</h3>
             ${r.is_manager ? '' : `<div class="score ${scoreClass}">${scoreText}</div>`}
             <p><strong>Slot:</strong> ${r.slot}</p>
@@ -2706,6 +2799,34 @@ def index():
         renderChat(data.messages || []);
       } catch (e) {
         chatMsg.textContent = e.message;
+      }
+    }
+
+    function renderRevolt(events) {
+      const rows = (events || []).slice(-12).reverse();
+      window.__revoltEvents = rows;
+      revoltFeed.innerHTML = '';
+      for (const ev of rows) {
+        const row = document.createElement('div');
+        row.className = 'meta';
+        row.style.padding = '6px 8px';
+        row.style.border = '1px solid #2b3a67';
+        row.style.borderRadius = '8px';
+        row.style.background = '#0f1730';
+        row.textContent = `[${(ev.at || '').slice(11, 19)}] ${String(ev.source_rack || 'rack').trim()} ${String(ev.source_task_id || '').slice(0, 8)} → ${String(ev.target_rack || 'rack').trim()} ${String(ev.target_task_id || '').slice(0, 8)}`;
+        revoltFeed.appendChild(row);
+      }
+      if (!rows.length) revoltFeed.innerHTML = '<div class="meta">No revolt events yet.</div>';
+    }
+
+    async function loadRevolt() {
+      try {
+        const res = await fetch('/api/revolt/events');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Revolt feed unavailable');
+        renderRevolt(data.events || []);
+      } catch {
+        // keep previous feed
       }
     }
 
@@ -3029,12 +3150,14 @@ def index():
     loadGame();
     loadState();
     loadChat();
+    loadRevolt();
     loadHaiku();
     loadRps();
     loadDuel();
     setInterval(loadGame, 3000);
     setInterval(loadState, 3000);
     setInterval(loadChat, 4000);
+    setInterval(loadRevolt, 3000);
     setInterval(loadHaiku, 5000);
     setInterval(loadRps, 3000);
     setInterval(loadDuel, 3000);
