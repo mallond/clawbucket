@@ -16,25 +16,33 @@ wait_for_docker() {
 
 init_swarm_if_needed() {
   local rack="$1"
-  local ip state control
+  local ip pool
   ip="$(docker exec "$rack" sh -lc "hostname -i | awk '{print \$1}'")"
-  state="$(docker exec "$rack" docker info --format '{{.Swarm.LocalNodeState}}')"
-  control="$(docker exec "$rack" docker info --format '{{.Swarm.ControlAvailable}}')"
 
-  if [[ "$state" != "active" || "$control" != "true" ]]; then
-    if [[ "$state" != "inactive" ]]; then
-      docker exec "$rack" docker swarm leave --force >/dev/null 2>&1 || true
-    fi
-    echo "[${rack}] docker swarm init --advertise-addr ${ip}"
-    docker exec "$rack" docker swarm init --advertise-addr "$ip" >/dev/null
+  # Force a clean one-node swarm with a rack-specific address pool.
+  # This avoids overlay pool collisions in DinD simulation.
+  docker exec "$rack" docker swarm leave --force >/dev/null 2>&1 || true
+
+  if [[ "$rack" == "rack-1-dind" ]]; then
+    pool="10.41.0.0/16"
   else
-    echo "[${rack}] swarm already initialized"
+    pool="10.42.0.0/16"
   fi
+
+  echo "[${rack}] docker swarm init --advertise-addr ${ip} --default-addr-pool ${pool}"
+  docker exec "$rack" docker swarm init \
+    --advertise-addr "$ip" \
+    --default-addr-pool "$pool" \
+    --default-addr-pool-mask-length 24 >/dev/null
 }
 
 deploy_stack() {
   local rack="$1"
   local stack="$2"
+
+  # Clean up old rack-specific stacks from earlier iterations.
+  docker exec "$rack" docker stack rm clawbucket_rack1 >/dev/null 2>&1 || true
+  docker exec "$rack" docker stack rm clawbucket_rack2 >/dev/null 2>&1 || true
 
   echo "[${rack}] ensuring image ${IMAGE} is present"
   if ! docker exec "$rack" docker image inspect "$IMAGE" >/dev/null 2>&1; then
@@ -65,8 +73,9 @@ for rack in rack-1-dind rack-2-dind; do
   init_swarm_if_needed "$rack"
 done
 
-deploy_stack rack-1-dind clawbucket_rack1
-deploy_stack rack-2-dind clawbucket_rack2
+# Use the original stack name inside each isolated rack so service env names resolve.
+deploy_stack rack-1-dind clawbucket
+deploy_stack rack-2-dind clawbucket
 
 status rack-1-dind
 status rack-2-dind

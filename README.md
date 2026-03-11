@@ -251,8 +251,8 @@ chmod +x deploy-racks.sh
 ```
 
 This starts two nested Docker hosts:
-- `rack-1-dind` → stack `clawbucket_rack1` (BOT 1)
-- `rack-2-dind` → stack `clawbucket_rack2` (BOT 2)
+- `rack-1-dind` → stack `clawbucket` (BOT 1)
+- `rack-2-dind` → stack `clawbucket` (BOT 2)
 
 Host endpoints:
 - BOT 1 dashboard: `http://localhost:18080`
