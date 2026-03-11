@@ -70,17 +70,17 @@ for rack in rack-1-dind rack-2-dind; do
 done
 
 # Use the original stack name inside each isolated rack so service env names resolve.
-deploy_stack rack-1-dind clawbucket BOT-1
-deploy_stack rack-2-dind clawbucket BOT-2
+deploy_stack rack-1-dind clawbucket "Machine Rack 1"
+deploy_stack rack-2-dind clawbucket "Machine Rack 2"
 
 status rack-1-dind
 status rack-2-dind
 
 echo ""
 echo "Ready. Endpoints:"
-echo "- BOT 1 dashboard:   http://localhost:18080"
-echo "- BOT 1 aggregator:  http://localhost:18090/api/scoreboard"
-echo "- BOT 1 ollama:      http://localhost:18134"
-echo "- BOT 2 dashboard:   http://localhost:28080"
-echo "- BOT 2 aggregator:  http://localhost:28090/api/scoreboard"
-echo "- BOT 2 ollama:      http://localhost:28134"
+echo "- Machine Rack 1 dashboard:   http://localhost:18080"
+echo "- Machine Rack 1 aggregator:  http://localhost:18090/api/scoreboard"
+echo "- Machine Rack 1 ollama:      http://localhost:18134"
+echo "- Machine Rack 2 dashboard:   http://localhost:28080"
+echo "- Machine Rack 2 aggregator:  http://localhost:28090/api/scoreboard"
+echo "- Machine Rack 2 ollama:      http://localhost:28134"
