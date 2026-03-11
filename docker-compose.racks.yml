@@ -1,0 +1,52 @@
+version: "3.9"
+
+services:
+  rack-1-dind:
+    image: docker:27-dind
+    container_name: rack-1-dind
+    privileged: true
+    environment:
+      - DOCKER_TLS_CERTDIR=
+    command:
+      - --host=tcp://0.0.0.0:2375
+      - --host=unix:///var/run/docker.sock
+      - --storage-driver=overlay2
+    volumes:
+      - rack1-docker-data:/var/lib/docker
+      - ./:/workspace/clawbucket:ro
+    ports:
+      - "127.0.0.1:12375:2375"   # Docker API (rack-1)
+      - "18080:8080"             # bot-1 dashboard
+      - "18090:8090"             # bot-1 aggregator
+      - "18134:11434"            # bot-1 ollama
+    networks:
+      - rack-lab
+
+  rack-2-dind:
+    image: docker:27-dind
+    container_name: rack-2-dind
+    privileged: true
+    environment:
+      - DOCKER_TLS_CERTDIR=
+    command:
+      - --host=tcp://0.0.0.0:2375
+      - --host=unix:///var/run/docker.sock
+      - --storage-driver=overlay2
+    volumes:
+      - rack2-docker-data:/var/lib/docker
+      - ./:/workspace/clawbucket:ro
+    ports:
+      - "127.0.0.1:22375:2375"   # Docker API (rack-2)
+      - "28080:8080"             # bot-2 dashboard
+      - "28090:8090"             # bot-2 aggregator
+      - "28134:11434"            # bot-2 ollama
+    networks:
+      - rack-lab
+
+volumes:
+  rack1-docker-data:
+  rack2-docker-data:
+
+networks:
+  rack-lab:
+    name: rack-lab

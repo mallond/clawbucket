@@ -310,3 +310,29 @@ Unit motto:
 ---
 
 This README is the current canonical snapshot of behavior and architecture.
+
+---
+
+## 12) Simulated dual-rack mode (BOT 1 / BOT 2)
+
+To run two isolated copies of the original design (rack-1 + rack-2) via Docker-in-Docker:
+
+```bash
+cd clawbucket
+chmod +x deploy-racks.sh
+./deploy-racks.sh
+```
+
+This starts two nested Docker hosts:
+- `rack-1-dind` → stack `clawbucket_rack1` (BOT 1)
+- `rack-2-dind` → stack `clawbucket_rack2` (BOT 2)
+
+Host endpoints:
+- BOT 1 dashboard: `http://localhost:18080`
+- BOT 1 scoreboard: `http://localhost:18090/api/scoreboard`
+- BOT 2 dashboard: `http://localhost:28080`
+- BOT 2 scoreboard: `http://localhost:28090/api/scoreboard`
+
+Files:
+- `docker-compose.racks.yml` (boot both DinD racks)
+- `deploy-racks.sh` (swarm init + stack deploy per rack)
